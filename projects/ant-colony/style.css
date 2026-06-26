@@ -1,0 +1,17 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #0d0f1a; }
+#canvas { display: block; }
+
+#info {
+  position: fixed;
+  top: 12px;
+  right: 16px;
+  font-family: 'SF Mono', 'Cascadia Code', monospace;
+  font-size: 0.75rem;
+  color: #585d8a;
+  display: flex;
+  gap: 1rem;
+  pointer-events: none;
+  user-select: none;
+}
+#info span { background: rgba(13, 15, 26, 0.7); padding: 4px 10px; border-radius: 4px; }

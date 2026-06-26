@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sim Sandbox</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0d0f1a;
+      color: #c8cbe0;
+      font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 3rem 1.5rem;
+    }
+    h1 {
+      font-size: 1.75rem;
+      font-weight: 400;
+      letter-spacing: 0.08em;
+      color: #7a7fba;
+      margin-bottom: 0.5rem;
+    }
+    p.sub {
+      color: #585d8a;
+      font-size: 0.85rem;
+      margin-bottom: 2.5rem;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 1rem;
+      width: 100%;
+      max-width: 800px;
+    }
+    .card {
+      background: #14172e;
+      border: 1px solid #1e2242;
+      border-radius: 8px;
+      padding: 1.25rem 1.5rem;
+      text-decoration: none;
+      color: #c8cbe0;
+      transition: border-color 0.2s, background 0.2s;
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+    }
+    .card:hover {
+      border-color: #4a5080;
+      background: #181c38;
+    }
+    .card .title {
+      font-size: 1.05rem;
+      color: #a0a5d0;
+    }
+    .card .desc {
+      font-size: 0.8rem;
+      color: #585d8a;
+      line-height: 1.4;
+    }
+    .card .tag {
+      font-size: 0.7rem;
+      color: #3e4370;
+      margin-top: 0.25rem;
+    }
+    .empty {
+      grid-column: 1 / -1;
+      text-align: center;
+      color: #3e4370;
+      font-size: 0.9rem;
+      padding: 3rem 0;
+    }
+  </style>
+</head>
+<body>
+  <h1>✦ Sim Sandbox</h1>
+  <p class="sub">select a simulation to run</p>
+  <div class="grid" id="project-list">
+    <!-- project cards are populated at runtime -->
+  </div>
+  <script type="module">
+    const projects = [
+      { name: "ant-colony", title: "Ant Colony", desc: "Pheromone-trail foraging simulation with 200+ agents on a 512×512 grid.", tag: "canvas · 2d" },
+      // { name: "...", title: "...", desc: "...", tag: "..." },
+    ];
+    const list = document.getElementById("project-list");
+    if (projects.length === 0) {
+      list.innerHTML = '<div class="empty">no simulations yet</div>';
+    } else {
+      list.innerHTML = projects.map(p =>
+        `<a class="card" href="/projects/${p.name}/">
+          <span class="title">${p.title}</span>
+          <span class="desc">${p.desc}</span>
+          <span class="tag">${p.tag}</span>
+        </a>`
+      ).join("");
+    }
+  </script>
+</body>
+</html>
