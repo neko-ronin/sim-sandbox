@@ -1,0 +1,54 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #05060f; }
+canvas { display: block; }
+
+#info {
+  position: fixed;
+  top: 14px;
+  right: 18px;
+  font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+  font-size: 0.75rem;
+  color: #585d8a;
+  display: flex;
+  gap: 1rem;
+  pointer-events: none;
+  user-select: none;
+  z-index: 10;
+}
+#info span {
+  background: rgba(5, 6, 15, 0.7);
+  backdrop-filter: blur(4px);
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(88, 93, 138, 0.15);
+}
+
+#hud {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+  font-size: 0.7rem;
+  color: #585d8a;
+  pointer-events: none;
+  user-select: none;
+  z-index: 10;
+  text-align: center;
+  line-height: 1.7;
+  opacity: 0.6;
+  transition: opacity 0.3s;
+}
+#hud:hover { opacity: 1; }
+#hud .mode { color: #7a7fba; font-size: 0.8rem; letter-spacing: 0.05em; }
+#hud .keys { font-size: 0.65rem; }
+#hud .keys kbd {
+  display: inline-block;
+  background: rgba(88, 93, 138, 0.12);
+  border: 1px solid rgba(88, 93, 138, 0.2);
+  border-radius: 3px;
+  padding: 0 5px;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 1.5;
+}
