@@ -238,8 +238,79 @@ for (const [fx, fy, fz] of initialFood) {
 // ─── Agents ────────────────────────────────────────────────────────────────
 let agents = createAgents(PARAMS.antCount, NEST_START.x, NEST_START.y, NEST_START.z);
 
-let agentGeo = new THREE.SphereGeometry(0.2, 6, 4);
-let agentMat = new THREE.MeshBasicMaterial();
+// Glass/orb ShaderMaterial with explicit instancing attribute declarations
+// (bare ShaderMaterial does not auto-inject instanceMatrix/instanceColor)
+const agentUniforms = {
+  uTime: { value: 0 },
+};
+
+const agentVertexShader = `
+  attribute mat4 instanceMatrix;
+  attribute vec3 instanceColor;
+
+  varying vec3 vNormal;
+  varying vec3 vViewPosition;
+  varying vec3 vColor;
+  varying vec3 vWorldPos;
+
+  void main() {
+    vec4 worldPos = instanceMatrix * vec4(position, 1.0);
+    vec3 worldNormal = normalize((instanceMatrix * vec4(normal, 0.0)).xyz);
+
+    vec4 mvPosition = viewMatrix * worldPos;
+    vViewPosition = -mvPosition.xyz;
+    vNormal = normalize(normalMatrix * worldNormal);
+    vWorldPos = worldPos.xyz;
+    vColor = instanceColor;
+    gl_Position = projectionMatrix * mvPosition;
+  }
+`;
+
+const agentFragmentShader = `
+  uniform float uTime;
+
+  varying vec3 vNormal;
+  varying vec3 vViewPosition;
+  varying vec3 vColor;
+  varying vec3 vWorldPos;
+
+  void main() {
+    vec3 viewDir = normalize(vViewPosition);
+    vec3 normal = normalize(vNormal);
+
+    // Fresnel rim (bright at glancing angles, transparent at centre)
+    float fresnel = pow(1.0 - abs(dot(viewDir, normal)), 2.6);
+
+    // Caustic shimmer — 3D position-based animated noise
+    float caustic = sin(vWorldPos.x * 10.0 + uTime * 0.9)
+                  * cos(vWorldPos.y * 9.0  + uTime * 0.7)
+                  * sin(vWorldPos.z * 11.0 + uTime * 1.1);
+    caustic = caustic * 0.5 + 0.5;
+
+    // Core glow
+    float ndotl = max(0.0, dot(normal, viewDir));
+    float core = pow(ndotl, 0.6);
+
+    // Glass-like inner refraction sparkle
+    float sparkle = pow(caustic, 4.0) * 0.5;
+
+    vec3 col = vColor * (0.25 + 0.45 * core + 0.55 * fresnel + 0.20 * caustic + sparkle);
+
+    float alpha = 0.35 + 0.65 * fresnel;
+
+    gl_FragColor = vec4(col, alpha);
+  }
+`;
+
+let agentGeo = new THREE.IcosahedronGeometry(0.5, 2);
+let agentMat = new THREE.ShaderMaterial({
+  uniforms: agentUniforms,
+  vertexShader: agentVertexShader,
+  fragmentShader: agentFragmentShader,
+  transparent: true,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+});
 let agentMesh = new THREE.InstancedMesh(agentGeo, agentMat, agents.length);
 agentMesh.instanceColor = new THREE.InstancedBufferAttribute(
   new Float32Array(agents.length * 3), 3,
@@ -259,8 +330,15 @@ function rebuildAgents(): void {
   agentMat.dispose();
 
   agents = createAgents(PARAMS.antCount, nestPos.x, nestPos.y, nestPos.z);
-  agentGeo = new THREE.SphereGeometry(0.2, 6, 4);
-  agentMat = new THREE.MeshBasicMaterial();
+  agentGeo = new THREE.IcosahedronGeometry(0.5, 2);
+  agentMat = new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: agentUniforms.uTime.value } },
+    vertexShader: agentVertexShader,
+    fragmentShader: agentFragmentShader,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
   agentMesh = new THREE.InstancedMesh(agentGeo, agentMat, agents.length);
   agentMesh.instanceColor = new THREE.InstancedBufferAttribute(
     new Float32Array(agents.length * 3), 3,
@@ -360,7 +438,10 @@ function frame(): void {
   // 3. Update agent mesh positions
   updateAgentMeshes();
 
-  // 4. Animate dust particles (slow drift)
+  // 4. Advance shader uniforms
+  agentUniforms.uTime.value = animTime;
+
+  // 5. Animate dust particles (slow drift)
   const dPos = dustPoints.geometry.attributes.position.array as Float32Array;
   for (let i = 0; i < DUST_COUNT; i++) {
     const i3 = i * 3;
