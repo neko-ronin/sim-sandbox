@@ -1,5 +1,4 @@
-// ─── Simulation Parameters (shared config) ─────────────────────────────────
-// Exported as a mutable singleton so the debug panel can adjust them live.
+// ─── Simulation Parameters ─────────────────────────────────────────────────
 
 export interface SimParams {
   antCount: number;
@@ -10,15 +9,17 @@ export interface SimParams {
   depositAmount: number;
   nestRadius: number;
   foodRadius: number;
+  cubeSize: number;
 }
 
 export const PARAMS: SimParams = {
   antCount: 400,
-  speed: 1.2,
-  senseRadius: 2,
-  turnRate: 0.45,
-  pheromoneDecay: 0.97,
-  depositAmount: 0.12,
-  nestRadius: 3,
-  foodRadius: 4,
+  speed: 0.6,
+  senseRadius: 2.5,
+  turnRate: 0.5,
+  pheromoneDecay: 0.96,
+  depositAmount: 0.15,
+  nestRadius: 2.5,
+  foodRadius: 3,
+  cubeSize: 50,
 };

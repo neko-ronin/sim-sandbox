@@ -1,238 +1,295 @@
-// ─── Agent Colony: Main Entry ──────────────────────────────────────────────
-// Three.js 3D scene with interactive food placement, draggable nest, and
-// real-time pheromone-trail simulation.
+// ─── Agent Colony: 3D Vivarium ─────────────────────────────────────────────
+// Free-floating 3D agents in a cubic volume.  Static camera, no ground plane.
+// Click to place food; drag the nest sphere.  Debug panel toggled via ⚙ button.
 
 import * as THREE from "three";
-import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
-import { PheromoneGrid } from "./pheromone";
-import { createAnts, updateAnts, FoodSource2D, ANT_STATE_FORAGING } from "./ants";
+import { PheromoneVolume } from "./pheromone";
+import { createAgents, updateAgents, FoodSource3D, STATE_FORAGING } from "./ants";
 import { MouseHandler } from "./interaction";
 import { HUD } from "./hud";
 import { PARAMS } from "./params";
 
 // ─── Constants ─────────────────────────────────────────────────────────────
-const GRID_SIZE = 128;
-const WORLD_SIZE = 128; // ground plane matches grid 1:1
-const HALF = WORLD_SIZE / 2;
-const ANT_SCALE = 0.25;
+const GRID_SIZE = 32; // pheromone volume resolution (32×32×32)
+const HALF = PARAMS.cubeSize / 2;
+const WORLD_TO_GRID = GRID_SIZE / PARAMS.cubeSize;
+const NEST_START = new THREE.Vector3(-8, 4, -8);
 
 // ─── Scene ─────────────────────────────────────────────────────────────────
 const scene = new THREE.Scene();
-scene.fog = new THREE.FogExp2(0x05060f, 0.003);
+scene.fog = new THREE.FogExp2(0x05060f, 0.012);
 
-// ─── Three.js Setup ────────────────────────────────────────────────────────
-const renderer = new THREE.WebGLRenderer({
-  antialias: true,
-  alpha: false,
-});
+// ─── Renderer ──────────────────────────────────────────────────────────────
+let renderer: THREE.WebGLRenderer;
+try {
+  renderer = new THREE.WebGLRenderer({
+    antialias: true,
+    powerPreference: "high-performance",
+    failIfMajorPerformanceCaveat: false,
+  });
+} catch (e) {
+  const msg = document.createElement("div");
+  msg.style.cssText =
+    "position:fixed;inset:0;display:flex;align-items:center;justify-content:center;" +
+    "font-family:'SF Mono',monospace;color:#585d8a;background:#05060f;" +
+    "text-align:center;padding:2rem;line-height:1.6";
+  msg.textContent =
+    "A WebGL context could not be created.\n" +
+    "Close other 3D tabs and reload.\n" +
+    "If the problem persists, check GPU drivers.";
+  document.body.appendChild(msg);
+  throw e;
+}
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setClearColor(0x05060f);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.2;
+renderer.toneMappingExposure = 1.5;
 document.body.appendChild(renderer.domElement);
 
+// WebGL context loss recovery
+renderer.domElement.addEventListener("webglcontextlost", (e) => {
+  e.preventDefault();
+  if (document.querySelector("#webgl-loss")) return;
+  const b = document.createElement("div");
+  b.id = "webgl-loss";
+  b.textContent = "⚠ WebGL context lost — reload the page.";
+  b.style.cssText =
+    "position:fixed;top:0;left:0;right:0;z-index:999;" +
+    "background:#ff4444;color:#fff;padding:8px;text-align:center;" +
+    "font-family:'SF Mono',monospace;font-size:0.8rem;";
+  document.body.prepend(b);
+});
+renderer.domElement.addEventListener("webglcontextrestored", () => {
+  document.querySelector("#webgl-loss")?.remove();
+});
+
+// ─── Camera (static) ──────────────────────────────────────────────────────
 const camera = new THREE.PerspectiveCamera(
-  45,
-  window.innerWidth / window.innerHeight,
-  0.1,
-  300,
+  40, window.innerWidth / window.innerHeight, 0.1, 150,
 );
-camera.position.set(50, 60, 70);
+camera.position.set(40, 28, 45);
 camera.lookAt(0, 0, 0);
 
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-controls.dampingFactor = 0.08;
-controls.minDistance = 10;
-controls.maxDistance = 200;
-controls.maxPolarAngle = Math.PI / 2 - 0.05;
-controls.target.set(0, 0, 0);
-controls.update();
-
 // ─── Lights ────────────────────────────────────────────────────────────────
-scene.add(new THREE.AmbientLight(0x222244, 0.6));
+scene.add(new THREE.AmbientLight(0x1a1a3a, 0.4));
 
-const dirLight = new THREE.DirectionalLight(0xffeedd, 2.5);
-dirLight.position.set(40, 80, 30);
-scene.add(dirLight);
+// Colored point lights for atmosphere
+const lightPositions: Array<[number, number, number, number, string]> = [
+  [-15, 10, -15, 1.5, "#66aaff"],
+  [15, -5, 15, 1.2, "#ff66aa"],
+  [-10, -15, 12, 1.0, "#aaff66"],
+  [12, 15, -10, 0.8, "#ffaa44"],
+];
+for (const [lx, ly, lz, intensity, color] of lightPositions) {
+  const pl = new THREE.PointLight(color, intensity, 60);
+  pl.position.set(lx, ly, lz);
+  scene.add(pl);
+}
 
-const fillLight = new THREE.DirectionalLight(0x8888ff, 0.4);
-fillLight.position.set(-30, 20, -40);
-scene.add(fillLight);
+// Subtle top fill
+const topLight = new THREE.DirectionalLight(0x8888ff, 0.3);
+topLight.position.set(0, 30, 0);
+scene.add(topLight);
 
-// ─── Pheromone texture (dynamic canvas) ────────────────────────────────────
-const pheromoneCanvas = document.createElement("canvas");
-pheromoneCanvas.width = GRID_SIZE;
-pheromoneCanvas.height = GRID_SIZE;
-const pheromoneCtx = pheromoneCanvas.getContext("2d")!;
-const pheromoneTex = new THREE.CanvasTexture(pheromoneCanvas);
-pheromoneTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
-
-const pheromones = new PheromoneGrid(GRID_SIZE);
-
-// ─── Ground plane ──────────────────────────────────────────────────────────
-const groundGeo = new THREE.PlaneGeometry(WORLD_SIZE, WORLD_SIZE);
-const groundMat = new THREE.MeshStandardMaterial({
-  map: pheromoneTex,
-  emissiveMap: pheromoneTex,
-  emissive: new THREE.Color(0xffffff),
-  emissiveIntensity: 0.6,
-  roughness: 0.9,
-  metalness: 0.0,
+// ─── Vivarium cube (wireframe) ─────────────────────────────────────────────
+const cubeGeo = new THREE.BoxGeometry(PARAMS.cubeSize, PARAMS.cubeSize, PARAMS.cubeSize);
+const edges = new THREE.EdgesGeometry(cubeGeo);
+const edgeMat = new THREE.LineBasicMaterial({
+  color: 0x2a2e5a,
   transparent: true,
-  opacity: 0.85,
-  side: THREE.DoubleSide,
+  opacity: 0.3,
 });
-const ground = new THREE.Mesh(groundGeo, groundMat);
-ground.rotation.x = -Math.PI / 2;
-ground.position.set(0, -0.1, 0);
-scene.add(ground);
+const cubeFrame = new THREE.LineSegments(edges, edgeMat);
+scene.add(cubeFrame);
 
-// Subtle grid helper
-const gridHelper = new THREE.GridHelper(WORLD_SIZE, 32, 0x1a1e3a, 0x0d0f1a);
-gridHelper.position.y = -0.05;
-scene.add(gridHelper);
+// Corner markers (small glowing dots at each corner)
+const cornerMat = new THREE.PointsMaterial({
+  color: 0x4a5080,
+  size: 0.6,
+  transparent: true,
+  opacity: 0.4,
+  sizeAttenuation: true,
+});
+const cornerPositions: number[] = [];
+for (let sx of [-1, 1]) {
+  for (let sy of [-1, 1]) {
+    for (let sz of [-1, 1]) {
+      cornerPositions.push(sx * HALF, sy * HALF, sz * HALF);
+    }
+  }
+}
+const cornerGeo = new THREE.BufferGeometry();
+cornerGeo.setAttribute("position", new THREE.Float32BufferAttribute(cornerPositions, 3));
+const cornerPoints = new THREE.Points(cornerGeo, cornerMat);
+scene.add(cornerPoints);
+
+// ─── Ambient dust particles ────────────────────────────────────────────────
+const DUST_COUNT = 800;
+const dustGeo = new THREE.BufferGeometry();
+const dustPos = new Float32Array(DUST_COUNT * 3);
+const dustSizes = new Float32Array(DUST_COUNT);
+for (let i = 0; i < DUST_COUNT; i++) {
+  dustPos[i * 3] = (Math.random() - 0.5) * PARAMS.cubeSize;
+  dustPos[i * 3 + 1] = (Math.random() - 0.5) * PARAMS.cubeSize;
+  dustPos[i * 3 + 2] = (Math.random() - 0.5) * PARAMS.cubeSize;
+  dustSizes[i] = 0.2 + Math.random() * 0.6;
+}
+dustGeo.setAttribute("position", new THREE.Float32BufferAttribute(dustPos, 3));
+dustGeo.setAttribute("size", new THREE.Float32BufferAttribute(dustSizes, 1));
+
+const dustMat = new THREE.PointsMaterial({
+  color: 0x5566aa,
+  size: 0.3,
+  transparent: true,
+  opacity: 0.15,
+  sizeAttenuation: true,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+});
+const dustPoints = new THREE.Points(dustGeo, dustMat);
+scene.add(dustPoints);
+
+// ─── Pheromone volume ─────────────────────────────────────────────────────
+const pheromones = new PheromoneVolume(GRID_SIZE);
 
 // ─── Nest ──────────────────────────────────────────────────────────────────
-let nestPos = new THREE.Vector3(HALF, 0, HALF); // grid coords
-
-const nestSphereGeo = new THREE.SphereGeometry(
-  1, 24, 16, 0, Math.PI * 2, 0, Math.PI / 2,
-);
+let nestPos = NEST_START.clone();
+const nestGeo = new THREE.SphereGeometry(1, 28, 20);
 const nestMat = new THREE.MeshStandardMaterial({
-  color: 0x4466cc,
-  emissive: 0x4466cc,
-  emissiveIntensity: 0.3,
+  color: 0x6688ff,
+  emissive: 0x6688ff,
+  emissiveIntensity: 0.5,
+  transparent: true,
+  opacity: 0.75,
+  roughness: 0.2,
+  metalness: 0.0,
+});
+const nestMesh = new THREE.Mesh(nestGeo, nestMat);
+
+// Nest glow aura (transparent sphere)
+const auraGeo = new THREE.SphereGeometry(1.3, 20, 16);
+const auraMat = new THREE.MeshBasicMaterial({
+  color: 0x6688ff,
+  transparent: true,
+  opacity: 0.1,
+  side: THREE.BackSide,
+  blending: THREE.AdditiveBlending,
+});
+const auraMesh = new THREE.Mesh(auraGeo, auraMat);
+
+scene.add(nestMesh);
+scene.add(auraMesh);
+
+function updateNestVisuals(): void {
+  const s = PARAMS.nestRadius;
+  nestMesh.position.copy(nestPos);
+  nestMesh.scale.set(s, s, s);
+  auraMesh.position.copy(nestPos);
+  auraMesh.scale.set(s * 1.3, s * 1.3, s * 1.3);
+}
+updateNestVisuals();
+
+// ─── Food sources ──────────────────────────────────────────────────────────
+const foodSources3D: FoodSource3D[] = [];
+const foodMeshes: THREE.Mesh[] = [];
+
+const initialFood: Array<[number, number, number]> = [
+  [HALF - 8, 6, HALF - 8],
+  [HALF - 8, -4, -HALF + 8],
+  [-HALF + 8, 10, HALF - 8],
+  [-HALF + 8, -8, -HALF + 8],
+];
+
+const foodSphereGeo = new THREE.SphereGeometry(1, 16, 12);
+const foodMat = new THREE.MeshStandardMaterial({
+  color: 0x44dd88,
+  emissive: 0x44dd88,
+  emissiveIntensity: 0.4,
   transparent: true,
   opacity: 0.7,
   roughness: 0.3,
   metalness: 0.1,
 });
-const nestMesh = new THREE.Mesh(nestSphereGeo, nestMat);
 
-const nestRingGeo = new THREE.RingGeometry(1.2, 3, 32);
-const nestRingMat = new THREE.MeshBasicMaterial({
-  color: 0x4466cc,
-  transparent: true,
-  opacity: 0.15,
-  side: THREE.DoubleSide,
-});
-const nestRing = new THREE.Mesh(nestRingGeo, nestRingMat);
-nestRing.rotation.x = -Math.PI / 2;
+function addFood(wx: number, wy: number, wz: number): void {
+  if (
+    wx < -HALF || wx > HALF ||
+    wy < -HALF || wy > HALF ||
+    wz < -HALF || wz > HALF
+  ) return;
 
-scene.add(nestMesh);
-scene.add(nestRing);
+  foodSources3D.push({ x: wx, y: wy, z: wz, radius: PARAMS.foodRadius });
 
-function updateNestVisuals(): void {
-  const scale = PARAMS.nestRadius;
-  nestMesh.position.set(nestPos.x - HALF, 0.2, nestPos.z - HALF);
-  nestMesh.scale.set(scale, scale, scale);
-  nestRing.position.set(nestPos.x - HALF, 0.05, nestPos.z - HALF);
-  nestRing.scale.set(scale, scale, scale);
-}
-updateNestVisuals();
-
-// ─── Food sources ──────────────────────────────────────────────────────────
-const foodSources2D: FoodSource2D[] = [];
-const foodMeshes: THREE.Mesh[] = [];
-
-const initialFood: Array<[number, number]> = [
-  [HALF - 35, HALF - 35],
-  [HALF + 35, HALF - 35],
-  [HALF + 35, HALF + 35],
-  [HALF - 35, HALF + 35],
-];
-
-const foodRingGeo = new THREE.RingGeometry(0.8, 2, 20);
-const foodMat = new THREE.MeshBasicMaterial({
-  color: 0x44cc66,
-  transparent: true,
-  opacity: 0.3,
-  side: THREE.DoubleSide,
-});
-
-function addFood(worldX: number, worldZ: number): void {
-  const gx = worldX + HALF;
-  const gz = worldZ + HALF;
-  if (gx < 0 || gx > GRID_SIZE || gz < 0 || gz > GRID_SIZE) return;
-
-  foodSources2D.push({ x: gx, y: gz, radius: PARAMS.foodRadius });
-
-  const mesh = new THREE.Mesh(foodRingGeo.clone(), foodMat.clone());
-  mesh.position.set(worldX, 0.1, worldZ);
-  const scale = PARAMS.foodRadius / 2;
-  mesh.scale.set(scale, scale, scale);
+  const mesh = new THREE.Mesh(foodSphereGeo.clone(), foodMat.clone());
+  mesh.position.set(wx, wy, wz);
+  const s = PARAMS.foodRadius / 2;
+  mesh.scale.set(s, s, s);
   scene.add(mesh);
   foodMeshes.push(mesh);
 }
 
-for (const [fx, fz] of initialFood) {
-  addFood(fx - HALF, fz - HALF);
+// Also add food-aura ring effect
+for (const [fx, fy, fz] of initialFood) {
+  addFood(fx, fy, fz);
 }
 
-// ─── Ants ──────────────────────────────────────────────────────────────────
-let ants = createAnts(PARAMS.antCount, GRID_SIZE, HALF, HALF);
+// ─── Agents ────────────────────────────────────────────────────────────────
+let agents = createAgents(PARAMS.antCount, NEST_START.x, NEST_START.y, NEST_START.z);
 
-let antGeo = new THREE.SphereGeometry(ANT_SCALE, 6, 4);
-let antMat = new THREE.MeshStandardMaterial({
-  roughness: 0.2,
-  metalness: 0.0,
-});
-let antMesh = new THREE.InstancedMesh(antGeo, antMat, ants.length);
-antMesh.instanceColor = new THREE.InstancedBufferAttribute(
-  new Float32Array(ants.length * 3), 3,
+let agentGeo = new THREE.SphereGeometry(0.2, 6, 4);
+let agentMat = new THREE.MeshBasicMaterial();
+let agentMesh = new THREE.InstancedMesh(agentGeo, agentMat, agents.length);
+agentMesh.instanceColor = new THREE.InstancedBufferAttribute(
+  new Float32Array(agents.length * 3), 3,
 );
-antMesh.count = ants.length;
-scene.add(antMesh);
+agentMesh.count = agents.length;
+scene.add(agentMesh);
 
-// Temp objects for matrix/color computation
 const tmpVec = new THREE.Vector3();
 const tmpColor = new THREE.Color();
 const tmpMat = new THREE.Matrix4();
-const FORAGE_COLOR = new THREE.Color(0x36f9c0);
-const RETURN_COLOR = new THREE.Color(0xff8c00);
+const FORAGE_COLOR = new THREE.Color(0x44f9e0);
+const RETURN_COLOR = new THREE.Color(0xff8c44);
 
-function rebuildAnts(): void {
-  scene.remove(antMesh);
-  antGeo.dispose();
-  antMat.dispose();
+function rebuildAgents(): void {
+  scene.remove(agentMesh);
+  agentGeo.dispose();
+  agentMat.dispose();
 
-  ants = createAnts(PARAMS.antCount, GRID_SIZE, HALF, HALF);
-  antGeo = new THREE.SphereGeometry(ANT_SCALE, 6, 4);
-  antMat = new THREE.MeshStandardMaterial({ roughness: 0.2, metalness: 0.0 });
-  antMesh = new THREE.InstancedMesh(antGeo, antMat, ants.length);
-  antMesh.instanceColor = new THREE.InstancedBufferAttribute(
-    new Float32Array(ants.length * 3), 3,
+  agents = createAgents(PARAMS.antCount, nestPos.x, nestPos.y, nestPos.z);
+  agentGeo = new THREE.SphereGeometry(0.2, 6, 4);
+  agentMat = new THREE.MeshBasicMaterial();
+  agentMesh = new THREE.InstancedMesh(agentGeo, agentMat, agents.length);
+  agentMesh.instanceColor = new THREE.InstancedBufferAttribute(
+    new Float32Array(agents.length * 3), 3,
   );
-  antMesh.count = ants.length;
-  scene.add(antMesh);
+  agentMesh.count = agents.length;
+  scene.add(agentMesh);
 }
 
-function updateAntMeshes(): void {
-  const colorArr = antMesh.instanceColor!.array as Float32Array;
-  for (let i = 0; i < ants.length; i++) {
-    const ant = ants[i];
-    const wx = ant.x - HALF;
-    const wz = ant.y - HALF;
-    tmpVec.set(wx, 0.15, wz);
+function updateAgentMeshes(): void {
+  const colorArr = agentMesh.instanceColor!.array as Float32Array;
+  const now = Date.now();
+  for (let i = 0; i < agents.length; i++) {
+    const a = agents[i];
+    tmpVec.set(a.x, a.y, a.z);
     tmpMat.identity();
     tmpMat.setPosition(tmpVec);
-    antMesh.setMatrixAt(i, tmpMat);
+    agentMesh.setMatrixAt(i, tmpMat);
 
-    const c =
-      ant.state === ANT_STATE_FORAGING ? FORAGE_COLOR : RETURN_COLOR;
+    const isReturning = a.state === STATE_FORAGING;
+    const c = isReturning ? FORAGE_COLOR : RETURN_COLOR;
     tmpColor.copy(c);
-    // Per-ant brightness pulse
-    const pulse = 0.7 + 0.3 * Math.sin(Date.now() / 300 + i * 0.1);
+    const pulse = 0.6 + 0.4 * Math.sin(now / 250 + i * 0.15);
     tmpColor.multiplyScalar(pulse);
     colorArr[i * 3] = tmpColor.r;
     colorArr[i * 3 + 1] = tmpColor.g;
     colorArr[i * 3 + 2] = tmpColor.b;
   }
-  antMesh.instanceMatrix.needsUpdate = true;
-  antMesh.instanceColor!.needsUpdate = true;
+  agentMesh.instanceMatrix.needsUpdate = true;
+  agentMesh.instanceColor!.needsUpdate = true;
 }
 
 // ─── Mouse Interaction ─────────────────────────────────────────────────────
@@ -240,86 +297,112 @@ const mouseHandler = new MouseHandler(
   camera,
   renderer.domElement,
   {
-    onPlaceFood: (x, z) => addFood(x, z),
-    onStartNestDrag: () => { /* could show indicator */ },
-    onDragNest: (x, z) => {
-      nestPos.set(x + HALF, 0, z + HALF);
-      nestPos.x = Math.max(2, Math.min(GRID_SIZE - 2, nestPos.x));
-      nestPos.z = Math.max(2, Math.min(GRID_SIZE - 2, nestPos.z));
-      updateNestVisuals();
-      pheromones.clearCircle(nestPos.x, nestPos.z, PARAMS.nestRadius + 2);
+    onPlaceFood: (x, y, z) => addFood(x, y, z),
+    onStartNestDrag: () => {
+      nestMat.emissiveIntensity = 1.0;
     },
-    onEndNestDrag: () => { /* could hide indicator */ },
+    onDragNest: (x, y, z) => {
+      nestPos.set(x, y, z);
+      nestPos.x = Math.max(-HALF + 2, Math.min(HALF - 2, nestPos.x));
+      nestPos.y = Math.max(-HALF + 2, Math.min(HALF - 2, nestPos.y));
+      nestPos.z = Math.max(-HALF + 2, Math.min(HALF - 2, nestPos.z));
+      updateNestVisuals();
+      // Clear pheromones near new nest position
+      const gx = (nestPos.x + HALF) * WORLD_TO_GRID;
+      const gy = (nestPos.y + HALF) * WORLD_TO_GRID;
+      const gz = (nestPos.z + HALF) * WORLD_TO_GRID;
+      pheromones.clearSphere(gx, gy, gz, PARAMS.nestRadius * WORLD_TO_GRID + 2);
+    },
+    onEndNestDrag: () => {
+      nestMat.emissiveIntensity = 0.5;
+    },
   },
-  () => new THREE.Vector3(nestPos.x - HALF, 0, nestPos.z - HALF),
+  () => nestPos.clone(),
+  () => HALF,
   () => PARAMS.nestRadius,
 );
 
 // ─── Resize ────────────────────────────────────────────────────────────────
 window.addEventListener("resize", () => {
-  const w = window.innerWidth;
-  const h = window.innerHeight;
-  camera.aspect = w / h;
+  camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
-  renderer.setSize(w, h);
+  renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
 // ─── HUD ───────────────────────────────────────────────────────────────────
 const hud = new HUD();
 
-// ─── Debug panel → react to param changes ──────────────────────────────────
+// ─── Param changes ─────────────────────────────────────────────────────────
 window.addEventListener("param-change", ((e: CustomEvent) => {
   if (e.detail.key === "antCount") {
-    rebuildAnts();
+    rebuildAgents();
   }
 }) as EventListener);
 
 // ─── Main Loop ─────────────────────────────────────────────────────────────
 let animTime = 0;
+const dustVelocities: Float32Array = new Float32Array(DUST_COUNT * 3);
+for (let i = 0; i < DUST_COUNT * 3; i++) {
+  dustVelocities[i] = (Math.random() - 0.5) * 0.02;
+}
 
 function frame(): void {
   requestAnimationFrame(frame);
   animTime += 0.016;
 
-  // 1. Update simulation
-  updateAnts(
-    ants,
-    GRID_SIZE,
-    pheromones,
-    foodSources2D,
-    nestPos.x,
-    nestPos.z,
-  );
+  // 1. Update agents
+  updateAgents(agents, pheromones, foodSources3D, nestPos.x, nestPos.y, nestPos.z, PARAMS.cubeSize);
 
-  // 2. Step pheromone grid (decay + blur)
+  // 2. Step pheromone volume
   pheromones.step(PARAMS.pheromoneDecay);
 
-  // 3. Render pheromone heatmap to canvas → update GPU texture
-  pheromones.renderToCanvas(pheromoneCtx);
-  pheromoneTex.needsUpdate = true;
+  // 3. Update agent mesh positions
+  updateAgentMeshes();
 
-  // 4. Update ant 3D positions
-  updateAntMeshes();
+  // 4. Animate dust particles (slow drift)
+  const dPos = dustPoints.geometry.attributes.position.array as Float32Array;
+  for (let i = 0; i < DUST_COUNT; i++) {
+    const i3 = i * 3;
+    dPos[i3] += dustVelocities[i3];
+    dPos[i3 + 1] += dustVelocities[i3 + 1];
+    dPos[i3 + 2] += dustVelocities[i3 + 2];
+    // Wrap
+    if (dPos[i3] > HALF) dPos[i3] = -HALF;
+    if (dPos[i3] < -HALF) dPos[i3] = HALF;
+    if (dPos[i3 + 1] > HALF) dPos[i3 + 1] = -HALF;
+    if (dPos[i3 + 1] < -HALF) dPos[i3 + 1] = HALF;
+    if (dPos[i3 + 2] > HALF) dPos[i3 + 2] = -HALF;
+    if (dPos[i3 + 2] < -HALF) dPos[i3 + 2] = HALF;
+  }
+  dustPoints.geometry.attributes.position.needsUpdate = true;
 
-  // 5. Animate food patches (pulse + rotation)
-  const foodPulse = 0.5 + 0.5 * Math.sin(animTime * 1.5);
+  // 5. Animate food patches
+  const foodPulse = 0.5 + 0.5 * Math.sin(animTime * 1.2);
   for (const fm of foodMeshes) {
-    const mat = fm.material as THREE.MeshBasicMaterial;
-    mat.opacity = 0.15 + 0.2 * foodPulse;
-    fm.rotation.z = animTime * 0.3;
+    const mat = fm.material as THREE.MeshStandardMaterial;
+    mat.emissiveIntensity = 0.2 + 0.5 * foodPulse;
+    const s = (PARAMS.foodRadius / 2) * (0.9 + 0.1 * foodPulse);
+    fm.scale.set(s, s, s);
   }
 
   // 6. Animate nest glow
-  const nestPulse = 0.5 + 0.5 * Math.sin(animTime * 0.8);
-  nestMat.emissiveIntensity = 0.15 + 0.3 * nestPulse;
-  nestRingMat.opacity = 0.1 + 0.15 * nestPulse;
+  const nestPulse = 0.5 + 0.5 * Math.sin(animTime * 0.6);
+  nestMat.emissiveIntensity = 0.3 + 0.4 * nestPulse;
+  auraMat.opacity = 0.06 + 0.1 * nestPulse;
+  const as = PARAMS.nestRadius * (1.2 + 0.15 * nestPulse);
+  auraMesh.scale.set(as, as, as);
 
-  // 7. Render
-  controls.update();
+  // 7. Cube frame subtle pulse
+  edgeMat.opacity = 0.2 + 0.15 * Math.sin(animTime * 0.3);
+
+  // 8. Corner markers pulse
+  cornerMat.opacity = 0.3 + 0.2 * Math.sin(animTime * 0.4);
+
+  // 9. Render
   renderer.render(scene, camera);
 
-  // 8. HUD
-  hud.tick(ants.length);
+  // 10. HUD
+  hud.tick(agents.length);
 }
 
 frame();

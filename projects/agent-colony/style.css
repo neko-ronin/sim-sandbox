@@ -23,32 +23,44 @@ canvas { display: block; }
   border: 1px solid rgba(88, 93, 138, 0.15);
 }
 
-#hud {
+#panel-toggle {
+  position: fixed;
+  top: 14px;
+  left: 18px;
+  z-index: 21;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid rgba(88, 93, 138, 0.2);
+  background: rgba(5, 6, 15, 0.7);
+  backdrop-filter: blur(4px);
+  color: #7a7fba;
+  font-size: 1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.2s, background 0.2s;
+  user-select: none;
+  line-height: 1;
+}
+#panel-toggle:hover {
+  border-color: #4a5080;
+  background: rgba(20, 23, 46, 0.8);
+}
+
+#hint {
   position: fixed;
   bottom: 28px;
   left: 50%;
   transform: translateX(-50%);
   font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
-  font-size: 0.7rem;
-  color: #585d8a;
+  font-size: 0.65rem;
+  color: #3e4370;
   pointer-events: none;
   user-select: none;
   z-index: 10;
   text-align: center;
-  line-height: 1.7;
-  opacity: 0.6;
-  transition: opacity 0.3s;
-}
-#hud:hover { opacity: 1; }
-#hud .mode { color: #7a7fba; font-size: 0.8rem; letter-spacing: 0.05em; }
-#hud .keys { font-size: 0.65rem; }
-#hud .keys kbd {
-  display: inline-block;
-  background: rgba(88, 93, 138, 0.12);
-  border: 1px solid rgba(88, 93, 138, 0.2);
-  border-radius: 3px;
-  padding: 0 5px;
-  font-family: inherit;
-  font-size: inherit;
-  line-height: 1.5;
+  line-height: 1.8;
+  opacity: 0.5;
 }
