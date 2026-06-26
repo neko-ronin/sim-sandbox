@@ -18,7 +18,8 @@ const NEST_START = new THREE.Vector3(-8, 4, -8);
 
 // ─── Scene ─────────────────────────────────────────────────────────────────
 const scene = new THREE.Scene();
-scene.fog = new THREE.FogExp2(0x05060f, 0.012);
+scene.background = new THREE.Color(0x0a0a20);
+scene.fog = new THREE.FogExp2(0x0a0a20, 0.012);
 
 // ─── Renderer ──────────────────────────────────────────────────────────────
 let renderer: THREE.WebGLRenderer;
@@ -238,16 +239,13 @@ for (const [fx, fy, fz] of initialFood) {
 // ─── Agents ────────────────────────────────────────────────────────────────
 let agents = createAgents(PARAMS.antCount, NEST_START.x, NEST_START.y, NEST_START.z);
 
-// Glass/orb ShaderMaterial with explicit instancing attribute declarations
-// (bare ShaderMaterial does not auto-inject instanceMatrix/instanceColor)
+// Glass/orb ShaderMaterial — Three.js injects instanceMatrix and instanceColor
+// automatically for InstancedMesh, so we don't declare them here.
 const agentUniforms = {
   uTime: { value: 0 },
 };
 
 const agentVertexShader = `
-  attribute mat4 instanceMatrix;
-  attribute vec3 instanceColor;
-
   varying vec3 vNormal;
   varying vec3 vViewPosition;
   varying vec3 vColor;
