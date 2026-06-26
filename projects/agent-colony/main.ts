@@ -18,7 +18,8 @@ const NEST_START = new THREE.Vector3(-8, 4, -8);
 
 // ─── Scene ─────────────────────────────────────────────────────────────────
 const scene = new THREE.Scene();
-scene.fog = new THREE.FogExp2(0x05060f, 0.012);
+scene.background = new THREE.Color(0x0a0a20);
+scene.fog = new THREE.FogExp2(0x0a0a20, 0.012);
 
 // ─── Renderer ──────────────────────────────────────────────────────────────
 let renderer: THREE.WebGLRenderer;
@@ -238,8 +239,12 @@ for (const [fx, fy, fz] of initialFood) {
 // ─── Agents ────────────────────────────────────────────────────────────────
 let agents = createAgents(PARAMS.antCount, NEST_START.x, NEST_START.y, NEST_START.z);
 
-let agentGeo = new THREE.SphereGeometry(0.2, 6, 4);
-let agentMat = new THREE.MeshBasicMaterial();
+let agentGeo = new THREE.SphereGeometry(0.6, 12, 8);
+let agentMat = new THREE.MeshBasicMaterial({
+  transparent: true,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+});
 let agentMesh = new THREE.InstancedMesh(agentGeo, agentMat, agents.length);
 agentMesh.instanceColor = new THREE.InstancedBufferAttribute(
   new Float32Array(agents.length * 3), 3,
@@ -259,8 +264,12 @@ function rebuildAgents(): void {
   agentMat.dispose();
 
   agents = createAgents(PARAMS.antCount, nestPos.x, nestPos.y, nestPos.z);
-  agentGeo = new THREE.SphereGeometry(0.2, 6, 4);
-  agentMat = new THREE.MeshBasicMaterial();
+  agentGeo = new THREE.SphereGeometry(0.6, 12, 8);
+  agentMat = new THREE.MeshBasicMaterial({
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
   agentMesh = new THREE.InstancedMesh(agentGeo, agentMat, agents.length);
   agentMesh.instanceColor = new THREE.InstancedBufferAttribute(
     new Float32Array(agents.length * 3), 3,
