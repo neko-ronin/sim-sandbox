@@ -10,14 +10,10 @@ export interface InteractionCallbacks {
 /**
  * Handles mouse interaction for the vivarium.
  *
- * Since the camera is static, we project clicks onto a plane that passes
- * through the origin and is perpendicular to the camera's look direction.
- *
- * This gives a natural 3D feel — clicking a point on the screen maps to
- * a 3D position at that visual depth.
- *
- * - Left-click (short) → place food at that 3D position.
- * - Left-click + hold on nest → drag nest within the vivarium volume.
+ * Nest selection uses raycaster.intersectObject against the actual mesh,
+ * so the user clicks on what they see.  Nest drag projects the mouse onto
+ * a plane at the nest's current depth (perpendicular to camera).
+ * Food placement projects onto a plane through the cube centre.
  */
 export class MouseHandler {
   private raycaster = new THREE.Raycaster();
@@ -26,12 +22,14 @@ export class MouseHandler {
   private readonly domElement: HTMLCanvasElement;
   private readonly callbacks: InteractionCallbacks;
   private readonly nestGetter: () => THREE.Vector3;
+  private readonly nestMeshes: THREE.Mesh[];
   private readonly cubeHalf: () => number;
 
   private mousedown = new THREE.Vector2();
   private isDown = false;
   private isDraggingNest = false;
-  private clickPlane = new THREE.Plane();
+  private foodPlane = new THREE.Plane();
+  private dragPlane = new THREE.Plane();
   private CLICK_THRESHOLD = 6;
 
   constructor(
@@ -39,6 +37,7 @@ export class MouseHandler {
     domElement: HTMLCanvasElement,
     callbacks: InteractionCallbacks,
     nestGetter: () => THREE.Vector3,
+    nestMesh: THREE.Mesh,
     cubeHalf: () => number,
     private nestRadius: () => number,
   ) {
@@ -46,12 +45,13 @@ export class MouseHandler {
     this.domElement = domElement;
     this.callbacks = callbacks;
     this.nestGetter = nestGetter;
+    this.nestMeshes = [nestMesh];  // array for intersectObjects
     this.cubeHalf = cubeHalf;
 
-    // Plane through origin, perpendicular to camera
+    // Food-placement plane: through origin, perpendicular to camera
     const camDir = new THREE.Vector3();
     camera.getWorldDirection(camDir);
-    this.clickPlane.setFromNormalAndCoplanarPoint(camDir, new THREE.Vector3());
+    this.foodPlane.setFromNormalAndCoplanarPoint(camDir, new THREE.Vector3());
 
     domElement.addEventListener("pointerdown", this._onDown);
     domElement.addEventListener("pointermove", this._onMove);
@@ -64,18 +64,21 @@ export class MouseHandler {
     this.domElement.removeEventListener("pointerup", this._onUp);
   }
 
-  /** Get 3D point on the click-plane from screen coords, clamped to cube. */
-  private _planePoint(clientX: number, clientY: number): THREE.Vector3 | null {
+  /** Project mouse to a plane at the given depth, clamped to cube. */
+  private _planePointAtDepth(
+    clientX: number,
+    clientY: number,
+    plane: THREE.Plane,
+  ): THREE.Vector3 | null {
     const rect = this.domElement.getBoundingClientRect();
     this.pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
     this.pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
 
     this.raycaster.setFromCamera(this.pointer, this.camera);
     const target = new THREE.Vector3();
-    const t = this.raycaster.ray.intersectPlane(this.clickPlane, target);
+    const t = this.raycaster.ray.intersectPlane(plane, target);
     if (t === null) return null;
 
-    // Clamp to cube bounds
     const half = this.cubeHalf();
     target.x = Math.max(-half, Math.min(half, target.x));
     target.y = Math.max(-half, Math.min(half, target.y));
@@ -83,30 +86,35 @@ export class MouseHandler {
     return target;
   }
 
-  private _isNearNest(clientX: number, clientY: number): boolean {
-    const pt = this._planePoint(clientX, clientY);
-    if (!pt) return false;
-    const nest = this.nestGetter();
-    const dx = pt.x - nest.x;
-    const dy = pt.y - nest.y;
-    const dz = pt.z - nest.z;
-    const margin = this.nestRadius() + 2;
-    return dx * dx + dy * dy + dz * dz < margin * margin;
+  /** Does the ray hit the nest mesh? */
+  private _hitNest(clientX: number, clientY: number): boolean {
+    const rect = this.domElement.getBoundingClientRect();
+    this.pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    this.pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+
+    this.raycaster.setFromCamera(this.pointer, this.camera);
+    const hits = this.raycaster.intersectObjects(this.nestMeshes);
+    return hits.length > 0;
   }
 
   private _onDown = (e: PointerEvent) => {
     this.mousedown.set(e.clientX, e.clientY);
     this.isDown = true;
 
-    if (e.button === 0 && this._isNearNest(e.clientX, e.clientY)) {
+    if (e.button === 0 && this._hitNest(e.clientX, e.clientY)) {
       this.isDraggingNest = true;
+      // Set drag plane at nest's depth
+      const nestPos = this.nestGetter();
+      const camDir = new THREE.Vector3();
+      this.camera.getWorldDirection(camDir);
+      this.dragPlane.setFromNormalAndCoplanarPoint(camDir, nestPos);
       this.callbacks.onStartNestDrag();
     }
   };
 
   private _onMove = (e: PointerEvent) => {
     if (!this.isDraggingNest) return;
-    const pt = this._planePoint(e.clientX, e.clientY);
+    const pt = this._planePointAtDepth(e.clientX, e.clientY, this.dragPlane);
     if (pt) this.callbacks.onDragNest(pt.x, pt.y, pt.z);
   };
 
@@ -126,7 +134,7 @@ export class MouseHandler {
 
     // Short click → place food
     if (dist < this.CLICK_THRESHOLD && e.button === 0) {
-      const pt = this._planePoint(e.clientX, e.clientY);
+      const pt = this._planePointAtDepth(e.clientX, e.clientY, this.foodPlane);
       if (pt) this.callbacks.onPlaceFood(pt.x, pt.y, pt.z);
     }
   };

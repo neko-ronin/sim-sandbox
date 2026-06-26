@@ -318,6 +318,7 @@ const mouseHandler = new MouseHandler(
     },
   },
   () => nestPos.clone(),
+  nestMesh,
   () => HALF,
   () => PARAMS.nestRadius,
 );
