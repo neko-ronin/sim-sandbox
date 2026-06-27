@@ -184,7 +184,7 @@ const nestMesh = new THREE.Mesh(nestGeo, nestMat);
 scene.add(nestMesh);
 
 // Nest light
-const nestLight = new THREE.PointLight(0x6688ff, 2.0, 30);
+const nestLight = new THREE.PointLight(0x6688ff, 8.0, 50);
 scene.add(nestLight);
 
 function updateNestVisuals(): void {
@@ -239,7 +239,7 @@ function addFood(wx: number, wy: number, wz: number): void {
   foodMeshes.push(mesh);
 
   // Food light
-  const foodLight = new THREE.PointLight(0x44dd88, 2.0, 25);
+  const foodLight = new THREE.PointLight(0x44dd88, 6.0, 40);
   foodLight.position.set(wx, wy, wz);
   scene.add(foodLight);
 }
@@ -256,6 +256,10 @@ let agents = createAgents(PARAMS.antCount, NEST_START.x, NEST_START.y, NEST_STAR
 // automatically for InstancedMesh, so we don't declare them here.
 const agentUniforms = {
   uTime: { value: 0 },
+  uNestLightPos: { value: new THREE.Vector3() },
+  uNestLightCol: { value: new THREE.Color(0x6688ff) },
+  uFoodLightPos: { value: new THREE.Vector3() },
+  uFoodLightCol: { value: new THREE.Color(0x44dd88) },
 };
 
 const agentVertexShader = `
@@ -279,14 +283,15 @@ const agentVertexShader = `
 
 const agentFragmentShader = `
   uniform float uTime;
+  uniform vec3 uNestLightPos;
+  uniform vec3 uNestLightCol;
+  uniform vec3 uFoodLightPos;
+  uniform vec3 uFoodLightCol;
 
   varying vec3 vNormal;
   varying vec3 vViewPosition;
   varying vec3 vColor;
   varying vec3 vWorldPos;
-
-  #include <common>
-  #include <lights_pars_begin>
 
   void main() {
     vec3 viewDir = normalize(vViewPosition);
@@ -309,31 +314,29 @@ const agentFragmentShader = `
     // Glass base colour (internal glow)
     vec3 col = vColor * (0.25 + 0.45 * core + 0.55 * fresnel + 0.20 * caustic + sparkle);
 
-    // Accumulate scene light transmitted through the glass body
-    vec3 lightAccum = vec3(0.0);
+    // ── Custom per-light contribution ───────────────────────────────
 
-    #if NUM_POINT_LIGHTS > 0
-      for (int i = 0; i < NUM_POINT_LIGHTS; i++) {
-        vec3 lVec = pointLights[i].position - vWorldPos;
-        float dist = length(lVec);
-        vec3 lightDir = lVec / dist;
+    float lightDecay = 0.04; // gentler falloff so light travels visibly
 
-        float attenuation = 1.0 / (1.0 + pointLights[i].decay * dist * dist);
-        float diff = max(dot(normal, lightDir), 0.0);
+    // Nest light
+    vec3 toNest = uNestLightPos - vWorldPos;
+    float nestDist = length(toNest);
+    float nestAtt = 1.0 / (1.0 + lightDecay * nestDist * nestDist);
+    float nestDiff = max(0.0, dot(normal, normalize(toNest)));
+    // Glass body transmits light through the centre, reflects at edges
+    float transmission = 1.0 - fresnel * 0.7;
+    vec3 nestLight = uNestLightCol * nestDiff * nestAtt * transmission * 1.5;
 
-        // Glass transmits more light at the centre (transmission),
-        // reflects more at glancing angles (fresnel)
-        float transmission = 1.0 - fresnel * 0.7;
+    // Food light (aggregate — centroid of all food sources)
+    vec3 toFood = uFoodLightPos - vWorldPos;
+    float foodDist = length(toFood);
+    float foodAtt = 1.0 / (1.0 + lightDecay * foodDist * foodDist);
+    float foodDiff = max(0.0, dot(normal, normalize(toFood)));
+    vec3 foodLight = uFoodLightCol * foodDiff * foodAtt * transmission * 1.5;
 
-        lightAccum += pointLights[i].color * diff * attenuation * transmission * 0.6;
-      }
-    #endif
-
-    // Ambient fill
-    lightAccum += ambientLightColor * 0.3;
-
-    // Blend light through glass — illumination brightens + tints the body
-    col = mix(col, col + lightAccum * 0.8, 0.6);
+    // Combine and blend through the glass body
+    vec3 lightAccum = nestLight + foodLight;
+    col = col + lightAccum * 0.6;
 
     float alpha = 0.35 + 0.65 * fresnel;
 
@@ -371,7 +374,13 @@ function rebuildAgents(): void {
   agents = createAgents(PARAMS.antCount, nestPos.x, nestPos.y, nestPos.z);
   agentGeo = new THREE.IcosahedronGeometry(0.5, 2);
   agentMat = new THREE.ShaderMaterial({
-    uniforms: { uTime: { value: agentUniforms.uTime.value } },
+    uniforms: {
+      uTime: agentUniforms.uTime,
+      uNestLightPos: agentUniforms.uNestLightPos,
+      uNestLightCol: agentUniforms.uNestLightCol,
+      uFoodLightPos: agentUniforms.uFoodLightPos,
+      uFoodLightCol: agentUniforms.uFoodLightCol,
+    },
     vertexShader: agentVertexShader,
     fragmentShader: agentFragmentShader,
     transparent: true,
@@ -493,6 +502,14 @@ function frame(): void {
 
   // 4. Advance shader uniforms
   agentUniforms.uTime.value = animTime;
+  agentUniforms.uNestLightPos.value.copy(nestPos);
+  // Aggregate food light: centroid of all food sources
+  if (foodMeshes.length > 0) {
+    const avg = new THREE.Vector3();
+    for (const fm of foodMeshes) avg.add(fm.position);
+    avg.divideScalar(foodMeshes.length);
+    agentUniforms.uFoodLightPos.value.copy(avg);
+  }
 
   // 5. Animate dust particles (slow drift)
   const dPos = dustPoints.geometry.attributes.position.array as Float32Array;
