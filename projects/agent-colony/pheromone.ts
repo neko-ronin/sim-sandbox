@@ -81,8 +81,12 @@ export class PheromoneVolume {
     }
   }
 
-  /** Decay + 3×3×3 box blur in one pass. */
-  step(decay: number): void {
+  /** Decay + 3×3×3 box blur in one pass. `blurMix` ∈ [0..1] sets how much the
+   *  cell diffuses toward its neighbourhood mean each step: 1 = full box blur
+   *  (very diffuse), 0 = no spatial smoothing (sharp but noisy). Values around
+   *  0.4 keep trails as crisp lanes while still giving the gradient a sensable
+   *  slope. Defaults to 1 to preserve the original behaviour. */
+  step(decay: number, blurMix = 1): void {
     const s = this.size;
     const grid = this._grid;
     const blur = this._blur;
@@ -108,7 +112,10 @@ export class PheromoneVolume {
               }
             }
           }
-          blur[(z * s + y) * s + x] = (sum / n) * decay;
+          const idx = (z * s + y) * s + x;
+          const mean = sum / n;
+          const center = grid[idx];
+          blur[idx] = (center + (mean - center) * blurMix) * decay;
         }
       }
     }

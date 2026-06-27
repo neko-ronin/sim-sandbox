@@ -637,8 +637,8 @@ function frame(): void {
   animTime += 0.016;
 
   updateAgents(agents, homeField, foodField, foodSources3D, nestPos.x, nestPos.y, nestPos.z, PARAMS.cubeSize);
-  homeField.step(PARAMS.pheromoneDecay);
-  foodField.step(PARAMS.pheromoneDecay);
+  homeField.step(PARAMS.pheromoneDecay, PARAMS.blurMix);
+  foodField.step(PARAMS.pheromoneDecay, PARAMS.blurMix);
 
   updateAgentMeshes();
   updateTrail();
@@ -660,6 +660,17 @@ function frame(): void {
 
   composer.render();
   hud.tick(agents.length);
+}
+
+// Debug capture hook: ?warmup=N pre-runs N headless sim steps (no render) so a
+// screenshot shows steady-state trails without waiting real time. Harmless when absent.
+{
+  const w = parseInt(new URLSearchParams(location.search).get("warmup") || "0", 10);
+  for (let i = 0; i < w; i++) {
+    updateAgents(agents, homeField, foodField, foodSources3D, nestPos.x, nestPos.y, nestPos.z, PARAMS.cubeSize);
+    homeField.step(PARAMS.pheromoneDecay, PARAMS.blurMix);
+    foodField.step(PARAMS.pheromoneDecay, PARAMS.blurMix);
+  }
 }
 
 frame();

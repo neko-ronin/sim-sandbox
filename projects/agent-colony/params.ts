@@ -13,6 +13,9 @@ export interface SimParams {
   wander: number;
   /** Per-step multiplier applied to every pheromone cell (evaporation). */
   pheromoneDecay: number;
+  /** How strongly each cell diffuses toward its 3×3×3 mean each step [0..1].
+   *  Lower = sharper lanes; 1 = full box blur (very diffuse). */
+  blurMix: number;
   /** Strength of the HOME trail laid by outbound foragers. */
   homeDeposit: number;
   /** Strength of the FOOD trail laid by returning carriers. */
@@ -39,10 +42,11 @@ export const PARAMS: SimParams = {
   speed: 0.14,
   visionRadius: 7,
   senseRadius: 2.0,
-  wander: 0.32,
+  wander: 0.26,
   pheromoneDecay: 0.985,
-  homeDeposit: 0.2,
-  foodDeposit: 0.2,
+  blurMix: 0.4,
+  homeDeposit: 0.08,
+  foodDeposit: 0.08,
   trailDecay: 0.997,
   followThreshold: 0.004,
   nestRadius: 2.5,

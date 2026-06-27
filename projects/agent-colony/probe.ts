@@ -13,6 +13,9 @@ ov("PHDECAY", "pheromoneDecay");
 ov("HOMEDEP", "homeDeposit");
 ov("FOODDEP", "foodDeposit");
 ov("VISION", "visionRadius");
+ov("BLURMIX", "blurMix");
+ov("FOLLOW", "followThreshold");
+ov("WANDER", "wander");
 
 const GRID = 32, CUBE = PARAMS.cubeSize, HALF = CUBE / 2;
 const toGrid = (w: number) => (w + HALF) * (GRID / CUBE);
@@ -28,7 +31,7 @@ console.log(`trailDecay=${PARAMS.trailDecay} pheromoneDecay=${PARAMS.pheromoneDe
 for (let s = 1; s <= 6000; s++) {
   const prev = agents.map(a => a.state);
   updateAgents(agents, home, food, foods as any, nest.x, nest.y, nest.z, CUBE);
-  home.step(PARAMS.pheromoneDecay); food.step(PARAMS.pheromoneDecay);
+  home.step(PARAMS.pheromoneDecay, PARAMS.blurMix); food.step(PARAMS.pheromoneDecay, PARAMS.blurMix);
   for (let i = 0; i < agents.length; i++) { if (prev[i] === STATE_FORAGING && agents[i].state === STATE_RETURNING) pickups++; if (prev[i] === STATE_RETURNING && agents[i].state === STATE_FORAGING) deliveries++; }
   if (s % 1000 === 0) {
     const fr = agents.filter(a => a.state === STATE_FORAGING).length;
