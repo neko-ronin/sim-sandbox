@@ -49,14 +49,15 @@ export class PheromoneVolume {
     return sum;
   }
 
-  /** Trilinear-add: deposit `amount` across nearby cells. */
+  /** Trilinear-add: deposit `amount` across nearby cells. Uses the same
+   *  integer-centred cell convention as `get()` so reads and writes align. */
   add(x: number, y: number, z: number, amount: number): void {
-    const ix = Math.floor(x - 0.5);
-    const iy = Math.floor(y - 0.5);
-    const iz = Math.floor(z - 0.5);
-    const fx = x - 0.5 - ix;
-    const fy = y - 0.5 - iy;
-    const fz = z - 0.5 - iz;
+    const ix = Math.floor(x);
+    const iy = Math.floor(y);
+    const iz = Math.floor(z);
+    const fx = x - ix;
+    const fy = y - iy;
+    const fz = z - iz;
 
     for (let dz = 0; dz < 2; dz++) {
       for (let dy = 0; dy < 2; dy++) {

@@ -1,5 +1,46 @@
 # Pheromone Trail Mechanism — Diagnosis (handoff)
 
+Status: **FIXED 2026-06-26.** The diagnosis below was confirmed and the
+mechanism now works — the colony cycles in steady state. See the resolution
+box immediately below; the original diagnosis is preserved underneath.
+
+## ✅ Resolution (2026-06-26)
+
+Four changes, all validated with `bun probe.ts`:
+
+| # | Change | File |
+|---|--------|------|
+| 1 | `trailDecay` 0.985 → **0.997** (half-life ~6 → ~33 world units, so a deposit survives the full nest↔food trip and the field forms a gradient across the whole distance) | `params.ts` |
+| 2 | Follow gate `peak > 0.02` → **`peak > followThreshold` (0.004)**, a new tunable param. The old gate was above mid-trail signal so following almost never fired | `params.ts`, `ants.ts` |
+| 3 | Unified `add()` to the same integer-centred cell convention as `get()` (was offset by half a cell, smearing the gradient) | `pheromone.ts` |
+
+Before → after (steady state, per 1000 steps):
+
+```
+              HOMEmax   deliveries   foraging/returning
+shipped       ~1e-6     ~5-13        runs away 14→136 (pileup)
+fixed         ~0.78     ~1040        stable ~200/200 (balanced cycle)
+```
+
+`deliveries ≈ pickups` holds indefinitely (no returner pileup), HOME profile is
+high→low and FOOD low→high across the mid-trail stretch. The endpoint cells dip
+slightly below mid-trail, which is harmless: both endpoints sit inside
+`visionRadius=7`, so near-sight handles the final approach while the trail
+carries the long haul (mid-trail cells at t=0.5 are ~14 units from either end,
+far outside vision, and still navigate correctly — proving the trails, not
+vision, do the work).
+
+`visionRadius` was left at 7: it is the *discovery* radius (seeds the first FOOD
+trail). Dropping it starves the bootstrap (nobody stumbles onto a radius-3 food
+in a 50-unit cube) without changing the steady-state mechanism.
+
+Repro harness committed as `probe.ts` (param overrides via env, e.g.
+`TRAILDECAY=0.985 bun probe.ts` reproduces the original failure).
+
+---
+
+## Original diagnosis (preserved)
+
 Status: **diagnosed, not yet fixed.** Written end of session 2026-06-26.
 Investigated blind/fresh at the user's request; the user agreed this writeup is
 the complete picture. Pick up here next session.

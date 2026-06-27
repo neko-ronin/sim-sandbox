@@ -132,6 +132,7 @@ export function updateAgents(
   const vision2 = PARAMS.visionRadius * PARAMS.visionRadius;
   const nestR = PARAMS.nestRadius;
   const trailDecay = PARAMS.trailDecay;
+  const followThreshold = PARAMS.followThreshold;
   const wallM = half - 0.5;
 
   const grad = { x: 0, y: 0, z: 0 };
@@ -175,7 +176,7 @@ export function updateAgents(
       } else {
         // Can't see food — climb the FOOD trail left by successful carriers.
         const peak = senseGradient(foodField, gx, gy, gz, vx, vy, vz, senseR, grad);
-        if (peak > 0.02) {
+        if (peak > followThreshold) {
           tx = grad.x; ty = grad.y; tz = grad.z;
           steer = 0.3;
         }
@@ -194,7 +195,7 @@ export function updateAgents(
       } else {
         // Out of sight — climb the HOME trail back toward the nest.
         const peak = senseGradient(homeField, gx, gy, gz, vx, vy, vz, senseR, grad);
-        if (peak > 0.02) {
+        if (peak > followThreshold) {
           tx = grad.x; ty = grad.y; tz = grad.z;
           steer = 0.35;
         }

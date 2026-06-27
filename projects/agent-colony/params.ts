@@ -20,6 +20,9 @@ export interface SimParams {
   /** Per-step falloff of an agent's own trail strength as it travels from
    *  its last anchor (nest or food) — produces a gradient that points back. */
   trailDecay: number;
+  /** Minimum sensed concentration before an agent steers up a gradient.
+   *  Just high enough to reject empty-space noise; below the mid-trail signal. */
+  followThreshold: number;
   nestRadius: number;
   foodRadius: number;
   cubeSize: number;
@@ -40,7 +43,8 @@ export const PARAMS: SimParams = {
   pheromoneDecay: 0.985,
   homeDeposit: 0.2,
   foodDeposit: 0.2,
-  trailDecay: 0.985,
+  trailDecay: 0.997,
+  followThreshold: 0.004,
   nestRadius: 2.5,
   foodRadius: 3,
   cubeSize: 50,
