@@ -18,8 +18,8 @@ const NEST_START = new THREE.Vector3(-8, 4, -8);
 
 // ─── Scene ─────────────────────────────────────────────────────────────────
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0a0a20);
-scene.fog = new THREE.FogExp2(0x0a0a20, 0.012);
+scene.background = new THREE.Color(0x05060f);
+scene.fog = new THREE.FogExp2(0x05060f, 0.012);
 
 // ─── Renderer ──────────────────────────────────────────────────────────────
 let renderer: THREE.WebGLRenderer;
@@ -94,38 +94,6 @@ const topLight = new THREE.DirectionalLight(0x8888ff, 0.3);
 topLight.position.set(0, 30, 0);
 scene.add(topLight);
 
-// ─── Vivarium cube (wireframe) ─────────────────────────────────────────────
-const cubeGeo = new THREE.BoxGeometry(PARAMS.cubeSize, PARAMS.cubeSize, PARAMS.cubeSize);
-const edges = new THREE.EdgesGeometry(cubeGeo);
-const edgeMat = new THREE.LineBasicMaterial({
-  color: 0x2a2e5a,
-  transparent: true,
-  opacity: 0.3,
-});
-const cubeFrame = new THREE.LineSegments(edges, edgeMat);
-scene.add(cubeFrame);
-
-// Corner markers (small glowing dots at each corner)
-const cornerMat = new THREE.PointsMaterial({
-  color: 0x4a5080,
-  size: 0.6,
-  transparent: true,
-  opacity: 0.4,
-  sizeAttenuation: true,
-});
-const cornerPositions: number[] = [];
-for (let sx of [-1, 1]) {
-  for (let sy of [-1, 1]) {
-    for (let sz of [-1, 1]) {
-      cornerPositions.push(sx * HALF, sy * HALF, sz * HALF);
-    }
-  }
-}
-const cornerGeo = new THREE.BufferGeometry();
-cornerGeo.setAttribute("position", new THREE.Float32BufferAttribute(cornerPositions, 3));
-const cornerPoints = new THREE.Points(cornerGeo, cornerMat);
-scene.add(cornerPoints);
-
 // ─── Ambient dust particles ────────────────────────────────────────────────
 const DUST_COUNT = 800;
 const dustGeo = new THREE.BufferGeometry();
@@ -183,12 +151,17 @@ const auraMesh = new THREE.Mesh(auraGeo, auraMat);
 scene.add(nestMesh);
 scene.add(auraMesh);
 
+// Nest light
+const nestLight = new THREE.PointLight(0x6688ff, 2.0, 30);
+scene.add(nestLight);
+
 function updateNestVisuals(): void {
   const s = PARAMS.nestRadius;
   nestMesh.position.copy(nestPos);
   nestMesh.scale.set(s, s, s);
   auraMesh.position.copy(nestPos);
   auraMesh.scale.set(s * 1.3, s * 1.3, s * 1.3);
+  nestLight.position.copy(nestPos);
 }
 updateNestVisuals();
 
@@ -229,6 +202,11 @@ function addFood(wx: number, wy: number, wz: number): void {
   mesh.scale.set(s, s, s);
   scene.add(mesh);
   foodMeshes.push(mesh);
+
+  // Food light
+  const foodLight = new THREE.PointLight(0x44dd88, 1.5, 20);
+  foodLight.position.set(wx, wy, wz);
+  scene.add(foodLight);
 }
 
 // Also add food-aura ring effect
@@ -472,16 +450,10 @@ function frame(): void {
   const as = PARAMS.nestRadius * (1.2 + 0.15 * nestPulse);
   auraMesh.scale.set(as, as, as);
 
-  // 7. Cube frame subtle pulse
-  edgeMat.opacity = 0.2 + 0.15 * Math.sin(animTime * 0.3);
-
-  // 8. Corner markers pulse
-  cornerMat.opacity = 0.3 + 0.2 * Math.sin(animTime * 0.4);
-
-  // 9. Render
+  // 7. Render
   renderer.render(scene, camera);
 
-  // 10. HUD
+  // 8. HUD
   hud.tick(agents.length);
 }
 
