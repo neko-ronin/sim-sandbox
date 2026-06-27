@@ -497,6 +497,82 @@ function updateAgentMeshes(): void {
   agentMesh.instanceColor!.needsUpdate = true;
 }
 
+// ─── Pheromone trail visualisation ──────────────────────────────────────────
+// The two stigmergic fields are otherwise invisible data. Render every charged
+// grid cell as a soft additive point so the trails glow (food = amber/yellow,
+// home = cool blue) — the 3D analogue of the 2D heatmap, and it blooms.
+const TRAIL_MAX = GRID_SIZE * GRID_SIZE * GRID_SIZE;
+const trailGeo = new THREE.BufferGeometry();
+const trailPos = new Float32Array(TRAIL_MAX * 3);
+const trailCol = new Float32Array(TRAIL_MAX * 3);
+trailGeo.setAttribute("position", new THREE.BufferAttribute(trailPos, 3));
+trailGeo.setAttribute("color", new THREE.BufferAttribute(trailCol, 3));
+
+function makeGlowTexture(): THREE.Texture {
+  const c = document.createElement("canvas");
+  c.width = c.height = 32;
+  const ctx = c.getContext("2d")!;
+  const g = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+  g.addColorStop(0, "rgba(255,255,255,1)");
+  g.addColorStop(0.4, "rgba(255,255,255,0.5)");
+  g.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 32, 32);
+  const tex = new THREE.CanvasTexture(c);
+  tex.needsUpdate = true;
+  return tex;
+}
+
+const trailMat = new THREE.PointsMaterial({
+  size: 3.4,
+  map: makeGlowTexture(),
+  vertexColors: true,
+  transparent: true,
+  opacity: 0.8,
+  sizeAttenuation: true,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+});
+const trail = new THREE.Points(trailGeo, trailMat);
+scene.add(trail);
+
+// Auto-ranged (like the 2D heatmap) so the trail is always visible regardless
+// of absolute pheromone magnitude, on an amber → yellow → white-hot ramp.
+function updateTrail(): void {
+  const home = homeField.grid;
+  const food = foodField.grid;
+  const cell = PARAMS.cubeSize / GRID_SIZE;
+
+  let pMax = 1e-4;
+  for (let i = 0; i < TRAIL_MAX; i++) {
+    const c = food[i] + home[i];
+    if (c > pMax) pMax = c;
+  }
+  const inv = 1 / pMax;
+
+  let n = 0;
+  for (let z = 0; z < GRID_SIZE; z++) {
+    for (let y = 0; y < GRID_SIZE; y++) {
+      const row = (z * GRID_SIZE + y) * GRID_SIZE;
+      for (let x = 0; x < GRID_SIZE; x++) {
+        const c = (food[row + x] + home[row + x]) * inv; // 0..1, auto-ranged
+        if (c < 0.22) continue; // cull the diffuse halo; keep lanes + sources
+        const p = n * 3;
+        trailPos[p] = (x + 0.5) * cell - HALF;
+        trailPos[p + 1] = (y + 0.5) * cell - HALF;
+        trailPos[p + 2] = (z + 0.5) * cell - HALF;
+        trailCol[p] = 0.15 + 1.35 * c;        // red — warm, dark at the edges
+        trailCol[p + 1] = 0.06 + 1.0 * c;     // green — builds toward yellow
+        trailCol[p + 2] = c * c * 1.2;        // blue — only the hot cores go white
+        n++;
+      }
+    }
+  }
+  trailGeo.setDrawRange(0, n);
+  trailGeo.attributes.position.needsUpdate = true;
+  trailGeo.attributes.color.needsUpdate = true;
+}
+
 // ─── Mouse Interaction ─────────────────────────────────────────────────────
 const mouseHandler = new MouseHandler(
   camera,
@@ -565,6 +641,7 @@ function frame(): void {
   foodField.step(PARAMS.pheromoneDecay);
 
   updateAgentMeshes();
+  updateTrail();
   updateLightUniforms();
   fogPass.setTime(animTime);
 
