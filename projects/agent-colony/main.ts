@@ -384,9 +384,23 @@ const mouseHandler = new MouseHandler(
     onEndNestDrag: () => {
       nestMat.emissiveIntensity = 0.5;
     },
+    onStartFoodDrag: () => {},
+    onDragFood: (i, x, y, z) => {
+      const half = HALF - 2;
+      foodMeshes[i].position.set(
+        Math.max(-half, Math.min(half, x)),
+        Math.max(-half, Math.min(half, y)),
+        Math.max(-half, Math.min(half, z)),
+      );
+      foodSources3D[i].x = foodMeshes[i].position.x;
+      foodSources3D[i].y = foodMeshes[i].position.y;
+      foodSources3D[i].z = foodMeshes[i].position.z;
+    },
+    onEndFoodDrag: () => {},
   },
   () => nestPos.clone(),
   nestMesh,
+  () => foodMeshes,
   () => HALF,
   () => PARAMS.nestRadius,
 );
