@@ -99,6 +99,7 @@ export class HUD {
       { key: "foodDeposit", label: "Food Deposit", min: 0.01, max: 0.5, step: 0.01 },
       { key: "nestRadius", label: "Nest Radius", min: 1, max: 10, step: 0.5 },
       { key: "foodRadius", label: "Food Radius", min: 0.5, max: 10, step: 0.5 },
+      { key: "cloudDensity", label: "Cloud Density", min: 0, max: 3, step: 0.05 },
     ];
 
     for (const cfg of configs) {

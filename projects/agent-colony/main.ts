@@ -250,7 +250,7 @@ class VolumetricFogPass extends Pass {
         uInvProj: { value: new THREE.Matrix4() },
         uCamWorld: { value: new THREE.Matrix4() },
         uHalf: { value: half },
-        uDensity: { value: 0.95 },
+        uDensity: { value: PARAMS.cloudDensity },
         uLightPos: { value: lightPos },
         uLightCol: { value: lightCol },
       },
@@ -266,6 +266,8 @@ class VolumetricFogPass extends Pass {
   }
 
   setTime(t: number): void { this.fogMat.uniforms.uTime.value = t; }
+
+  setDensity(d: number): void { this.fogMat.uniforms.uDensity.value = d; }
 
   setSize(w: number, h: number): void {
     this.rt.setSize(Math.max(1, Math.floor(w / 2)), Math.max(1, Math.floor(h / 2)));
@@ -523,6 +525,7 @@ const hud = new HUD();
 
 window.addEventListener("param-change", ((e: CustomEvent) => {
   if (e.detail.key === "antCount") rebuildAgents();
+  else if (e.detail.key === "cloudDensity") fogPass.setDensity(e.detail.value);
 }) as EventListener);
 
 // ─── Main Loop ─────────────────────────────────────────────────────────────

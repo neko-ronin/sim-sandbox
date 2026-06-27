@@ -23,6 +23,8 @@ export interface SimParams {
   nestRadius: number;
   foodRadius: number;
   cubeSize: number;
+  /** Opacity/thickness of the volumetric cloud (0 = off). */
+  cloudDensity: number;
 }
 
 export const PARAMS: SimParams = {
@@ -38,4 +40,5 @@ export const PARAMS: SimParams = {
   nestRadius: 2.5,
   foodRadius: 3,
   cubeSize: 50,
+  cloudDensity: 0.95,
 };
