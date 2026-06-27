@@ -285,11 +285,14 @@ const agentFragmentShader = `
   varying vec3 vColor;
   varying vec3 vWorldPos;
 
+  #include <common>
+  #include <lights_pars_begin>
+
   void main() {
     vec3 viewDir = normalize(vViewPosition);
     vec3 normal = normalize(vNormal);
 
-    // Fresnel rim (bright at glancing angles, transparent at centre)
+    // Fresnel rim
     float fresnel = pow(1.0 - abs(dot(viewDir, normal)), 2.6);
 
     // Caustic shimmer — 3D position-based animated noise
@@ -301,11 +304,36 @@ const agentFragmentShader = `
     // Core glow
     float ndotl = max(0.0, dot(normal, viewDir));
     float core = pow(ndotl, 0.6);
-
-    // Glass-like inner refraction sparkle
     float sparkle = pow(caustic, 4.0) * 0.5;
 
+    // Glass base colour (internal glow)
     vec3 col = vColor * (0.25 + 0.45 * core + 0.55 * fresnel + 0.20 * caustic + sparkle);
+
+    // Accumulate scene light transmitted through the glass body
+    vec3 lightAccum = vec3(0.0);
+
+    #if NUM_POINT_LIGHTS > 0
+      for (int i = 0; i < NUM_POINT_LIGHTS; i++) {
+        vec3 lVec = pointLights[i].position - vWorldPos;
+        float dist = length(lVec);
+        vec3 lightDir = lVec / dist;
+
+        float attenuation = 1.0 / (1.0 + pointLights[i].decay * dist * dist);
+        float diff = max(dot(normal, lightDir), 0.0);
+
+        // Glass transmits more light at the centre (transmission),
+        // reflects more at glancing angles (fresnel)
+        float transmission = 1.0 - fresnel * 0.7;
+
+        lightAccum += pointLights[i].color * diff * attenuation * transmission * 0.6;
+      }
+    #endif
+
+    // Ambient fill
+    lightAccum += ambientLightColor * 0.3;
+
+    // Blend light through glass — illumination brightens + tints the body
+    col = mix(col, col + lightAccum * 0.8, 0.6);
 
     float alpha = 0.35 + 0.65 * fresnel;
 

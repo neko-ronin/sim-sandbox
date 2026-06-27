@@ -14,7 +14,7 @@ export interface SimParams {
 
 export const PARAMS: SimParams = {
   antCount: 400,
-  speed: 0.6,
+  speed: 0.05,
   senseRadius: 2.5,
   turnRate: 0.5,
   pheromoneDecay: 0.96,
