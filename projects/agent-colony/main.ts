@@ -238,27 +238,13 @@ function addFood(wx: number, wy: number, wz: number): void {
   scene.add(mesh);
   foodMeshes.push(mesh);
 
-  // Food light + glow aura
+  // Food light
   const foodLight = new THREE.PointLight(0x44dd88, 2.0, 25);
   foodLight.position.set(wx, wy, wz);
   scene.add(foodLight);
-
-  const foodAura = new THREE.Mesh(
-    new THREE.SphereGeometry(1, 12, 10),
-    new THREE.MeshBasicMaterial({
-      color: 0x44dd88,
-      transparent: true,
-      opacity: 0.12,
-      side: THREE.BackSide,
-      blending: THREE.AdditiveBlending,
-    }),
-  );
-  foodAura.position.set(wx, wy, wz);
-  foodAura.scale.set(s * 2.5, s * 2.5, s * 2.5);
-  scene.add(foodAura);
 }
 
-// Also add food-aura ring effect
+// Add initial food sources
 for (const [fx, fy, fz] of initialFood) {
   addFood(fx, fy, fz);
 }
@@ -333,7 +319,7 @@ let agentMat = new THREE.ShaderMaterial({
   vertexShader: agentVertexShader,
   fragmentShader: agentFragmentShader,
   transparent: true,
-  blending: THREE.SubtractiveBlending,
+  blending: THREE.NormalBlending,
   depthWrite: false,
 });
 let agentMesh = new THREE.InstancedMesh(agentGeo, agentMat, agents.length);
@@ -361,7 +347,7 @@ function rebuildAgents(): void {
     vertexShader: agentVertexShader,
     fragmentShader: agentFragmentShader,
     transparent: true,
-    blending: THREE.SubtractiveBlending,
+    blending: THREE.NormalBlending,
     depthWrite: false,
   });
   agentMesh = new THREE.InstancedMesh(agentGeo, agentMat, agents.length);
