@@ -90,11 +90,13 @@ export class HUD {
       step: number;
     }> = [
       { key: "antCount", label: "Agent Count", min: 10, max: 2000, step: 10 },
-      { key: "speed", label: "Speed", min: 0.05, max: 3, step: 0.05 },
-      { key: "senseRadius", label: "Sense Radius", min: 0.5, max: 6, step: 0.25 },
-      { key: "turnRate", label: "Wander", min: 0.05, max: 1.5, step: 0.05 },
+      { key: "speed", label: "Speed", min: 0.02, max: 0.6, step: 0.02 },
+      { key: "visionRadius", label: "Vision (near-sight)", min: 2, max: 18, step: 0.5 },
+      { key: "senseRadius", label: "Pheromone Sense", min: 0.5, max: 6, step: 0.25 },
+      { key: "wander", label: "Wander", min: 0.05, max: 0.8, step: 0.05 },
       { key: "pheromoneDecay", label: "Decay", min: 0.9, max: 0.999, step: 0.001 },
-      { key: "depositAmount", label: "Deposit", min: 0.01, max: 0.5, step: 0.01 },
+      { key: "homeDeposit", label: "Home Deposit", min: 0.01, max: 0.5, step: 0.01 },
+      { key: "foodDeposit", label: "Food Deposit", min: 0.01, max: 0.5, step: 0.01 },
       { key: "nestRadius", label: "Nest Radius", min: 1, max: 10, step: 0.5 },
       { key: "foodRadius", label: "Food Radius", min: 0.5, max: 10, step: 0.5 },
     ];

@@ -1,12 +1,21 @@
-// ─── 3D Agent ──────────────────────────────────────────────────────────────
-// Agents move freely through 3D space.  Foragers random-walk with bias toward
-// pheromone gradients.  Returners steer to nest while depositing trail.
+// ─── 3D Ant Agent — stigmergic foraging ────────────────────────────────────
+// Agents are near-sighted: they can only *see* food or the nest within
+// `visionRadius`. Beyond that they navigate by two pheromone fields, exactly
+// like real ants (stigmergy):
+//
+//   • Outbound FORAGERS lay a HOME trail and climb the FOOD trail to find food.
+//   • Returning CARRIERS lay a FOOD trail and climb the HOME trail to get back.
+//
+// Each agent's own deposit strength decays as it travels from its last anchor
+// (nest or food), so each field forms a gradient that points back to its
+// source. Followers performing gradient-ascent are therefore funnelled toward
+// the source — no agent ever needs global knowledge of where anything is.
 
 import { PheromoneVolume } from "./pheromone";
 import { PARAMS } from "./params";
 
-export const STATE_FORAGING = 0;
-export const STATE_RETURNING = 1;
+export const STATE_FORAGING = 0; // searching for food, carrying nothing
+export const STATE_RETURNING = 1; // carrying food back to the nest
 
 export interface Agent3D {
   x: number;
@@ -16,6 +25,8 @@ export interface Agent3D {
   vy: number;
   vz: number;
   state: number;
+  /** Remaining deposit strength, [0..1], reset to 1 at each anchor. */
+  trail: number;
 }
 
 export interface FoodSource3D {
@@ -25,42 +36,81 @@ export interface FoodSource3D {
   radius: number;
 }
 
-const HALF = 25; // cube half-size (world units mapped to grid 0..32)
-const GRID_TO_WORLD = 32 / (HALF * 2); // 0.64 — grid cells per world unit
-const WORLD_TO_GRID = (HALF * 2) / 32; // ~1.5625 — world units per grid cell
+const GRID = 32; // must match the PheromoneVolume resolution in main.ts
 
-function worldToGrid(w: number): number {
-  return (w + HALF) / WORLD_TO_GRID;
-}
-
-function wrap(v: number): number {
-  if (v < -HALF) return HALF - (-HALF - v);
-  if (v > HALF) return -HALF + (v - HALF);
-  return v;
+/** Uniform random point on the unit sphere (Marsaglia). */
+function randDir(out: { x: number; y: number; z: number }): void {
+  let x: number, y: number, s: number;
+  do {
+    x = Math.random() * 2 - 1;
+    y = Math.random() * 2 - 1;
+    s = x * x + y * y;
+  } while (s >= 1 || s === 0);
+  const f = 2 * Math.sqrt(1 - s);
+  out.x = x * f;
+  out.y = y * f;
+  out.z = 1 - 2 * s;
 }
 
 export function createAgents(count: number, nx: number, ny: number, nz: number): Agent3D[] {
   const agents: Agent3D[] = [];
+  const d = { x: 0, y: 0, z: 0 };
   for (let i = 0; i < count; i++) {
-    const theta = Math.random() * Math.PI * 2;
-    const phi = Math.acos(2 * Math.random() - 1);
-    const r = Math.random() * 3;
+    randDir(d);
+    const r = Math.random() * 2;
     agents.push({
-      x: nx + Math.cos(theta) * Math.sin(phi) * r,
-      y: ny + Math.sin(theta) * Math.sin(phi) * r,
-      z: nz + Math.cos(phi) * r,
-      vx: Math.random() - 0.5,
-      vy: Math.random() - 0.5,
-      vz: Math.random() - 0.5,
-      state: Math.random() < 0.5 ? STATE_FORAGING : STATE_RETURNING,
+      x: nx + d.x * r,
+      y: ny + d.y * r,
+      z: nz + d.z * r,
+      vx: d.x,
+      vy: d.y,
+      vz: d.z,
+      state: STATE_FORAGING, // everyone starts outbound from the nest
+      trail: 1,
     });
   }
   return agents;
 }
 
+// Scratch objects reused across the whole update to avoid per-agent allocation.
+const _sample = { x: 0, y: 0, z: 0 };
+
+/**
+ * Sample a forward-biased cone of directions and return the unit vector that
+ * points toward the highest concentration in `field`. `(gx,gy,gz)` is the
+ * agent position in grid space; `(hx,hy,hz)` its current unit heading.
+ * Returns the peak concentration found (so the caller can ignore empty space).
+ */
+function senseGradient(
+  field: PheromoneVolume,
+  gx: number, gy: number, gz: number,
+  hx: number, hy: number, hz: number,
+  senseR: number,
+  best: { x: number; y: number; z: number },
+): number {
+  let bestVal = -1;
+  best.x = hx; best.y = hy; best.z = hz;
+  for (let j = 0; j < 7; j++) {
+    randDir(_sample);
+    // Bias toward current heading for coherent, non-jittery motion.
+    let dx = hx * 0.55 + _sample.x * 0.45;
+    let dy = hy * 0.55 + _sample.y * 0.45;
+    let dz = hz * 0.55 + _sample.z * 0.45;
+    const l = Math.hypot(dx, dy, dz) || 1;
+    dx /= l; dy /= l; dz /= l;
+    const v = field.get(gx + dx * senseR, gy + dy * senseR, gz + dz * senseR);
+    if (v > bestVal) {
+      bestVal = v;
+      best.x = dx; best.y = dy; best.z = dz;
+    }
+  }
+  return bestVal;
+}
+
 export function updateAgents(
   agents: Agent3D[],
-  pheromones: PheromoneVolume,
+  homeField: PheromoneVolume,
+  foodField: PheromoneVolume,
   foodSources: FoodSource3D[],
   nestX: number,
   nestY: number,
@@ -68,167 +118,129 @@ export function updateAgents(
   cubeSize: number,
 ): void {
   const half = cubeSize / 2;
+  const toGrid = GRID / cubeSize; // world units → grid cells
   const speed = PARAMS.speed;
   const senseR = PARAMS.senseRadius;
-  const turnRate = PARAMS.turnRate;
-  const deposit = PARAMS.depositAmount;
+  const wander = PARAMS.wander;
+  const vision2 = PARAMS.visionRadius * PARAMS.visionRadius;
   const nestR = PARAMS.nestRadius;
+  const trailDecay = PARAMS.trailDecay;
+  const wallM = half - 0.5;
+
+  const grad = { x: 0, y: 0, z: 0 };
+  const wd = { x: 0, y: 0, z: 0 };
 
   for (let i = 0; i < agents.length; i++) {
     const a = agents[i];
     let { x, y, z, vx, vy, vz } = a;
 
-    // Normalise velocity
-    let len = Math.sqrt(vx * vx + vy * vy + vz * vz);
-    if (len < 0.001) {
-      vx = Math.random() - 0.5;
-      vy = Math.random() - 0.5;
-      vz = Math.random() - 0.5;
-      len = Math.sqrt(vx * vx + vy * vy + vz * vz);
-    }
-    vx /= len;
-    vy /= len;
-    vz /= len;
+    // Keep heading normalised.
+    let len = Math.hypot(vx, vy, vz);
+    if (len < 1e-4) { randDir(wd); vx = wd.x; vy = wd.y; vz = wd.z; len = 1; }
+    vx /= len; vy /= len; vz /= len;
+
+    const gx = (x + half) * toGrid;
+    const gy = (y + half) * toGrid;
+    const gz = (z + half) * toGrid;
+
+    // Steering target this step (defaults to current heading).
+    let tx = vx, ty = vy, tz = vz;
+    let steer = 0; // blend weight toward target [0..1]
 
     if (a.state === STATE_FORAGING) {
-      // ── Sense pheromone gradient in 3D ──
-      const gx = worldToGrid(x);
-      const gy = worldToGrid(y);
-      const gz = worldToGrid(z);
+      // Lay the HOME trail so we (and others) can navigate back. Strongest
+      // near the nest, fading as we wander — this *is* the gradient home.
+      homeField.add(gx, gy, gz, PARAMS.homeDeposit * a.trail);
 
-      // Sample a cone of directions around current heading in 3D
-      let bestP = -Infinity;
-      let bestVx = vx;
-      let bestVy = vy;
-      let bestVz = vz;
-
-      for (let j = 0; j < 8; j++) {
-        const theta = Math.random() * Math.PI * 2;
-        const phi = (Math.random() - 0.5) * Math.PI * 0.6; // ±54° cone
-
-        // Rotate the base heading by theta around vertical, then by phi
-        const svx = vx * Math.cos(phi) + (vy * Math.cos(theta) + vz * Math.sin(theta)) * Math.sin(phi);
-        const svy = vy * Math.cos(phi) + (-vx * Math.cos(theta) + vz * Math.sin(theta)) * Math.sin(phi); // simplified rotation
-        const svz = vz * Math.cos(phi) - (vx * Math.sin(theta) - vy * Math.cos(theta)) * Math.sin(phi); // another approx
-        
-        // Simpler approach: just sample random directions
-        const st = Math.random() * Math.PI * 2;
-        const sp = Math.acos(2 * Math.random() - 1);
-        const sx = gx + Math.cos(st) * Math.sin(sp) * senseR;
-        const sy = gy + Math.sin(st) * Math.sin(sp) * senseR;
-        const sz = gz + Math.cos(sp) * senseR;
-        const p = pheromones.get(sx, sy, sz);
-        if (p > bestP) {
-          bestP = p;
-          const dx = sx - gx;
-          const dy = sy - gy;
-          const dz = sz - gz;
-          const dl = Math.sqrt(dx * dx + dy * dy + dz * dz);
-          if (dl > 0.001) {
-            bestVx = dx / dl;
-            bestVy = dy / dl;
-            bestVz = dz / dl;
-          }
+      // ── Near-sight: can we SEE a food source? ──
+      let seenDx = 0, seenDy = 0, seenDz = 0, seenBest = vision2;
+      for (let f = 0; f < foodSources.length; f++) {
+        const fs = foodSources[f];
+        const dx = fs.x - x, dy = fs.y - y, dz = fs.z - z;
+        const d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < seenBest) { seenBest = d2; seenDx = dx; seenDy = dy; seenDz = dz; }
+      }
+      if (seenBest < vision2) {
+        const l = Math.sqrt(seenBest) || 1;
+        tx = seenDx / l; ty = seenDy / l; tz = seenDz / l;
+        steer = 0.5; // lock on
+      } else {
+        // Can't see food — climb the FOOD trail left by successful carriers.
+        const peak = senseGradient(foodField, gx, gy, gz, vx, vy, vz, senseR, grad);
+        if (peak > 0.02) {
+          tx = grad.x; ty = grad.y; tz = grad.z;
+          steer = 0.3;
         }
       }
+    } else {
+      // ── Returning: lay the FOOD trail (strongest at the food). ──
+      foodField.add(gx, gy, gz, PARAMS.foodDeposit * a.trail);
 
-      if (bestP > 0.01) {
-        // Blend toward pheromone direction
-        vx += (bestVx - vx) * 0.2;
-        vy += (bestVy - vy) * 0.2;
-        vz += (bestVz - vz) * 0.2;
+      const dx = nestX - x, dy = nestY - y, dz = nestZ - z;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 < vision2) {
+        // Near-sight: nest is in view, head straight for it.
+        const l = Math.sqrt(d2) || 1;
+        tx = dx / l; ty = dy / l; tz = dz / l;
+        steer = 0.6;
+      } else {
+        // Out of sight — climb the HOME trail back toward the nest.
+        const peak = senseGradient(homeField, gx, gy, gz, vx, vy, vz, senseR, grad);
+        if (peak > 0.02) {
+          tx = grad.x; ty = grad.y; tz = grad.z;
+          steer = 0.35;
+        }
       }
+    }
 
-      // Random jitter
-      vx += (Math.random() - 0.5) * turnRate * 0.5;
-      vy += (Math.random() - 0.5) * turnRate * 0.5;
-      vz += (Math.random() - 0.5) * turnRate * 0.5;
+    // Steer toward target, then add random wander for exploration.
+    vx += (tx - vx) * steer;
+    vy += (ty - vy) * steer;
+    vz += (tz - vz) * steer;
+    randDir(wd);
+    vx += wd.x * wander;
+    vy += wd.y * wander;
+    vz += wd.z * wander;
 
-      // Re-normalise
-      len = Math.sqrt(vx * vx + vy * vy + vz * vz);
-      if (len > 0.001) {
-        vx /= len;
-        vy /= len;
-        vz /= len;
-      }
+    len = Math.hypot(vx, vy, vz) || 1;
+    vx /= len; vy /= len; vz /= len;
 
-      x += vx * speed;
-      y += vy * speed;
-      z += vz * speed;
+    // Integrate.
+    x += vx * speed;
+    y += vy * speed;
+    z += vz * speed;
 
-      // Wrap within cube
-      x = wrap(x);
-      y = wrap(y);
-      z = wrap(z);
+    // Bounce off the cube walls (keeps trails continuous, unlike wrapping).
+    if (x > wallM) { x = wallM; vx = -Math.abs(vx); }
+    else if (x < -wallM) { x = -wallM; vx = Math.abs(vx); }
+    if (y > wallM) { y = wallM; vy = -Math.abs(vy); }
+    else if (y < -wallM) { y = -wallM; vy = Math.abs(vy); }
+    if (z > wallM) { z = wallM; vz = -Math.abs(vz); }
+    else if (z < -wallM) { z = -wallM; vz = Math.abs(vz); }
 
-      // Check for food
-      for (const f of foodSources) {
-        const dx = x - f.x;
-        const dy = y - f.y;
-        const dz = z - f.z;
-        if (dx * dx + dy * dy + dz * dz < f.radius * f.radius) {
+    // Trail strength fades the longer it's been since the last anchor.
+    a.trail *= trailDecay;
+
+    // ── State transitions ──
+    if (a.state === STATE_FORAGING) {
+      for (let f = 0; f < foodSources.length; f++) {
+        const fs = foodSources[f];
+        const dx = x - fs.x, dy = y - fs.y, dz = z - fs.z;
+        if (dx * dx + dy * dy + dz * dz < fs.radius * fs.radius) {
           a.state = STATE_RETURNING;
+          a.trail = 1; // anchor the FOOD trail here
           break;
         }
       }
     } else {
-      // ── Returning: deposit pheromone, steer to nest ──
-      pheromones.add(worldToGrid(x), worldToGrid(y), worldToGrid(z), deposit);
-
-      const dx = nestX - x;
-      const dy = nestY - y;
-      const dz = nestZ - z;
-      const dl = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      if (dl > 0.001) {
-        // Steer toward nest
-        vx += (dx / dl - vx) * 0.08;
-        vy += (dy / dl - vy) * 0.08;
-        vz += (dz / dl - vz) * 0.08;
-      }
-
-      // Jitter
-      vx += (Math.random() - 0.5) * 0.3;
-      vy += (Math.random() - 0.5) * 0.3;
-      vz += (Math.random() - 0.5) * 0.3;
-
-      len = Math.sqrt(vx * vx + vy * vy + vz * vz);
-      if (len > 0.001) {
-        vx /= len;
-        vy /= len;
-        vz /= len;
-      }
-
-      x += vx * speed;
-      y += vy * speed;
-      z += vz * speed;
-
-      x = wrap(x);
-      y = wrap(y);
-      z = wrap(z);
-
-      // Reached nest?
-      const ndx = x - nestX;
-      const ndy = y - nestY;
-      const ndz = z - nestZ;
-      if (ndx * ndx + ndy * ndy + ndz * ndz < nestR * nestR) {
+      const dx = x - nestX, dy = y - nestY, dz = z - nestZ;
+      if (dx * dx + dy * dy + dz * dz < nestR * nestR) {
         a.state = STATE_FORAGING;
+        a.trail = 1; // anchor the HOME trail here
       }
     }
 
-    a.x = x;
-    a.y = y;
-    a.z = z;
-
-    // Store normalised velocity
-    len = Math.sqrt(vx * vx + vy * vy + vz * vz);
-    if (len > 0.001) {
-      a.vx = vx / len;
-      a.vy = vy / len;
-      a.vz = vz / len;
-    } else {
-      a.vx = 0;
-      a.vy = 0;
-      a.vz = 0;
-    }
+    a.x = x; a.y = y; a.z = z;
+    a.vx = vx; a.vy = vy; a.vz = vz;
   }
 }

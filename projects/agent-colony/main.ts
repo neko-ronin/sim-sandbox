@@ -1,8 +1,24 @@
 // ─── Agent Colony: 3D Vivarium ─────────────────────────────────────────────
-// Free-floating 3D agents in a cubic volume.  Static camera, no ground plane.
-// Click to place food; drag the nest sphere.  Debug panel toggled via ⚙ button.
+// Near-sighted agents forage through a cubic volume using two pheromone fields
+// (HOME + FOOD — see ants.ts). Visuals are a glowing dark-room aesthetic with
+// NO real scene lights — everything is self-lit and bloom carries the glow:
+//
+//   • Nest and food are emissive glowing orbs.
+//   • Agents are a cheap additive instanced shader: a fresnel-rimmed core that
+//     glows in its state colour AND picks up the nest/food orbs' colour nearby.
+//   • A raymarched volumetric cloud fills the cube, lit by those orb colours.
+//   • A bloom pass makes all of the above bleed light into a soft glow.
+//
+// No transmission, no per-instance PBR — the previous version's frame-killers.
+//
+// Interaction: left-click to place food · drag the blue nest · drag food.
 
 import * as THREE from "three";
+import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
+import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
+import { Pass, FullScreenQuad } from "three/examples/jsm/postprocessing/Pass.js";
 
 import { PheromoneVolume } from "./pheromone";
 import { createAgents, updateAgents, FoodSource3D, STATE_FORAGING } from "./ants";
@@ -11,15 +27,46 @@ import { HUD } from "./hud";
 import { PARAMS } from "./params";
 
 // ─── Constants ─────────────────────────────────────────────────────────────
-const GRID_SIZE = 32; // pheromone volume resolution (32×32×32)
+const GRID_SIZE = 32; // pheromone volume resolution (must match ants.ts GRID)
 const HALF = PARAMS.cubeSize / 2;
 const WORLD_TO_GRID = GRID_SIZE / PARAMS.cubeSize;
 const NEST_START = new THREE.Vector3(-8, 4, -8);
+const NEST_COLOR = 0x5b8cff;
+const FOOD_COLOR = 0x3ad17a;
+const MAX_AGENT_LIGHTS = 10; // glow sources sampled by the agent shader (fixed array)
+
+// A glow source the volumetric fog + agent shader sample for colour. Not a real
+// THREE.PointLight — just the nest and food orbs' own emitted colour. `pos` is
+// a live reference (meshes mutate in place), so tinting tracks dragging.
+interface SimLight {
+  pos: THREE.Vector3;
+  color: THREE.Color;
+  intensity: number;
+}
+const simLights: SimLight[] = [];
+
+// Shared light arrays uploaded to BOTH the agent shader and the volumetric fog
+// each frame (premultiplied colour). One source of truth → update once.
+const lightPosArr = Array.from({ length: MAX_AGENT_LIGHTS }, () => new THREE.Vector3(1e4, 1e4, 1e4));
+const lightColArr = Array.from({ length: MAX_AGENT_LIGHTS }, () => new THREE.Vector3());
+
+function updateLightUniforms(): void {
+  for (let i = 0; i < MAX_AGENT_LIGHTS; i++) {
+    if (i < simLights.length) {
+      const L = simLights[i];
+      lightPosArr[i].copy(L.pos);
+      lightColArr[i].set(L.color.r, L.color.g, L.color.b).multiplyScalar(L.intensity);
+    } else {
+      lightPosArr[i].set(1e4, 1e4, 1e4);
+      lightColArr[i].set(0, 0, 0);
+    }
+  }
+}
 
 // ─── Scene ─────────────────────────────────────────────────────────────────
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x05060f);
-scene.fog = new THREE.FogExp2(0x05060f, 0.012);
+scene.background = new THREE.Color(0x04050c);
+scene.fog = new THREE.FogExp2(0x04050c, 0.006);
 
 // ─── Renderer ──────────────────────────────────────────────────────────────
 let renderer: THREE.WebGLRenderer;
@@ -43,10 +90,11 @@ try {
   throw e;
 }
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-renderer.setClearColor(0x05060f);
+// Cap pixel ratio at 1.5 — retina 2× quadruples fill cost for no real gain here.
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+renderer.setClearColor(0x04050c);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.5;
+renderer.toneMappingExposure = 0.85;
 document.body.appendChild(renderer.domElement);
 
 // WebGL context loss recovery
@@ -73,125 +121,214 @@ const camera = new THREE.PerspectiveCamera(
 camera.position.set(40, 28, 45);
 camera.lookAt(0, 0, 0);
 
-// ─── Lights ────────────────────────────────────────────────────────────────
-scene.add(new THREE.AmbientLight(0x1a1a3a, 0.4));
-
-// Colored point lights for atmosphere
-const lightPositions: Array<[number, number, number, number, string]> = [
-  [-15, 10, -15, 1.5, "#66aaff"],
-  [15, -5, 15, 1.2, "#ff66aa"],
-  [-10, -15, 12, 1.0, "#aaff66"],
-  [12, 15, -10, 0.8, "#ffaa44"],
-];
-for (const [lx, ly, lz, intensity, color] of lightPositions) {
-  const pl = new THREE.PointLight(color, intensity, 60);
-  pl.position.set(lx, ly, lz);
-  scene.add(pl);
-}
-
-// Subtle top fill
-const topLight = new THREE.DirectionalLight(0x8888ff, 0.3);
-topLight.position.set(0, 30, 0);
-scene.add(topLight);
-
-// ─── Ambient dust particles ────────────────────────────────────────────────
-const DUST_COUNT = 800;
-const dustGeo = new THREE.BufferGeometry();
-const dustPos = new Float32Array(DUST_COUNT * 3);
-const dustSizes = new Float32Array(DUST_COUNT);
-for (let i = 0; i < DUST_COUNT; i++) {
-  dustPos[i * 3] = (Math.random() - 0.5) * PARAMS.cubeSize;
-  dustPos[i * 3 + 1] = (Math.random() - 0.5) * PARAMS.cubeSize;
-  dustPos[i * 3 + 2] = (Math.random() - 0.5) * PARAMS.cubeSize;
-  dustSizes[i] = 0.2 + Math.random() * 0.6;
-}
-dustGeo.setAttribute("position", new THREE.Float32BufferAttribute(dustPos, 3));
-dustGeo.setAttribute("size", new THREE.Float32BufferAttribute(dustSizes, 1));
-
-const dustMat = new THREE.PointsMaterial({
-  color: 0x5566aa,
-  size: 0.3,
-  transparent: true,
-  opacity: 0.15,
-  sizeAttenuation: true,
-  blending: THREE.AdditiveBlending,
-  depthWrite: false,
-});
-const dustPoints = new THREE.Points(dustGeo, dustMat);
-scene.add(dustPoints);
-
-// ─── Pheromone volume ─────────────────────────────────────────────────────
-const pheromones = new PheromoneVolume(GRID_SIZE);
-
-// ─── Shared caustic shader for nest and food ───────────────────────────
-const causticVertexShader = `
-  varying vec3 vNormal;
-  varying vec3 vViewPosition;
-  varying vec3 vWorldPos;
-
-  void main() {
-    vec4 worldPos = modelMatrix * vec4(position, 1.0);
-    vec4 mvPosition = viewMatrix * worldPos;
-    vViewPosition = -mvPosition.xyz;
-    vNormal = normalize(normalMatrix * normal);
-    vWorldPos = worldPos.xyz;
-    gl_Position = projectionMatrix * mvPosition;
-  }
+// ─── Volumetric cloud / fog pass ────────────────────────────────────────────
+// Raymarched participating media confined to the vivarium cube. Density is
+// domain-warped fractal noise (the swirling, flowing "fluid" look) and the
+// medium is lit by the nest/food glow. Marched at HALF resolution and
+// composited back at full res so it stays cheap.
+const fogVert = /* glsl */ `
+  varying vec2 vUv;
+  void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
 `;
 
-const causticFragmentShader = `
+const fogFrag = /* glsl */ `
+  precision highp float;
   uniform float uTime;
-  uniform vec3 uColor;
-  uniform float uIntensity;
+  uniform vec3  uCameraPos;
+  uniform mat4  uInvProj;
+  uniform mat4  uCamWorld;
+  uniform float uHalf;
+  uniform float uDensity;
+  uniform vec3  uLightPos[${MAX_AGENT_LIGHTS}];
+  uniform vec3  uLightCol[${MAX_AGENT_LIGHTS}];
+  varying vec2 vUv;
 
-  varying vec3 vNormal;
-  varying vec3 vViewPosition;
-  varying vec3 vWorldPos;
+  float hash(vec3 p) {
+    p = fract(p * 0.3183099 + 0.1);
+    p *= 17.0;
+    return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+  }
+  float vnoise(vec3 x) {
+    vec3 i = floor(x), f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(hash(i + vec3(0,0,0)), hash(i + vec3(1,0,0)), f.x),
+                   mix(hash(i + vec3(0,1,0)), hash(i + vec3(1,1,0)), f.x), f.y),
+               mix(mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x),
+                   mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x), f.y), f.z);
+  }
+  float fbm(vec3 p) {
+    float a = 0.5, s = 0.0;
+    for (int i = 0; i < 3; i++) { s += a * vnoise(p); p *= 2.03; a *= 0.5; }
+    return s;
+  }
+
+  // Cloud density at a world point — domain-warped fbm carved into wisps.
+  float clouds(vec3 wp) {
+    vec3 q = wp * 0.06 + vec3(0.02, 0.0, 0.015) * uTime;
+    vec3 w = vec3(fbm(q + 1.5), 0.0, fbm(q + 5.7));        // horizontal swirl
+    float d = fbm(q + 1.4 * w + 0.03 * uTime);
+    d = smoothstep(0.48, 1.0, d);
+    // Fade toward the cube faces so the volume reads as a contained nebula.
+    vec3 ap = abs(wp) / uHalf;
+    float edge = (1.0 - smoothstep(0.65, 1.0, ap.x)) *
+                 (1.0 - smoothstep(0.65, 1.0, ap.y)) *
+                 (1.0 - smoothstep(0.65, 1.0, ap.z));
+    return d * edge;
+  }
 
   void main() {
-    vec3 viewDir = normalize(vViewPosition);
-    vec3 normal = normalize(vNormal);
+    // Reconstruct a world-space ray through this pixel.
+    vec4 clip = vec4(vUv * 2.0 - 1.0, -1.0, 1.0);
+    vec4 view = uInvProj * clip; view /= view.w;
+    vec3 rd = normalize(mat3(uCamWorld) * normalize(view.xyz));
+    vec3 ro = uCameraPos;
 
-    float fresnel = pow(1.0 - abs(dot(viewDir, normal)), 2.6);
-    float caustic = sin(vWorldPos.x * 10.0 + uTime * 0.9)
-                  * cos(vWorldPos.y * 9.0  + uTime * 0.7)
-                  * sin(vWorldPos.z * 11.0 + uTime * 1.1);
-    caustic = caustic * 0.5 + 0.5;
-    float ndotl = max(0.0, dot(normal, viewDir));
-    float core = pow(ndotl, 0.6);
-    float sparkle = pow(caustic, 4.0) * 0.4;
+    // Intersect the cube [-uHalf, uHalf].
+    vec3 t1 = (vec3(-uHalf) - ro) / rd;
+    vec3 t2 = (vec3( uHalf) - ro) / rd;
+    vec3 tn = min(t1, t2), tf = max(t1, t2);
+    float tNear = max(max(tn.x, tn.y), max(tn.z, 0.0));
+    float tFar  = min(min(tf.x, tf.y), tf.z);
+    if (tFar <= tNear) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
 
-    vec3 col = uColor * (0.3 + 0.5 * core + 0.4 * fresnel + 0.2 * caustic + sparkle);
-    float alpha = 0.4 + 0.6 * fresnel;
-    gl_FragColor = vec4(col * uIntensity, alpha);
+    const int STEPS = 15;
+    float stepLen = (tFar - tNear) / float(STEPS);
+    float jitter = hash(vec3(vUv * 1024.0, uTime)) * stepLen; // dither out banding
+    float t = tNear + jitter;
+
+    float transmittance = 1.0;
+    vec3 glow = vec3(0.0);
+    for (int i = 0; i < STEPS; i++) {
+      vec3 p = ro + rd * t;
+      float dens = clouds(p) * uDensity;
+      if (dens > 0.002) {
+        vec3 lit = vec3(0.015, 0.02, 0.04); // faint cool ambient in-scatter
+        for (int l = 0; l < ${MAX_AGENT_LIGHTS}; l++) {
+          vec3 toL = uLightPos[l] - p;
+          lit += uLightCol[l] / (1.0 + 0.02 * dot(toL, toL));
+        }
+        float dT = exp(-dens * stepLen);
+        glow += transmittance * (1.0 - dT) * lit;
+        transmittance *= dT;
+        if (transmittance < 0.02) break;
+      }
+      t += stepLen;
+    }
+    // rgb = in-scattered glow, a = transmittance of the scene behind the fog.
+    gl_FragColor = vec4(glow, transmittance);
   }
 `;
 
-const nestUniforms = { uTime: { value: 0 }, uColor: { value: new THREE.Color(0x6688ff) }, uIntensity: { value: 1.0 } };
+const fogComposite = /* glsl */ `
+  uniform sampler2D tScene;
+  uniform sampler2D tFog;
+  varying vec2 vUv;
+  void main() {
+    vec3 scene = texture2D(tScene, vUv).rgb;
+    vec4 fog = texture2D(tFog, vUv);
+    gl_FragColor = vec4(scene * fog.a + fog.rgb, 1.0);
+  }
+`;
+
+class VolumetricFogPass extends Pass {
+  private cam: THREE.PerspectiveCamera;
+  private rt: THREE.WebGLRenderTarget;
+  private fogMat: THREE.ShaderMaterial;
+  private compMat: THREE.ShaderMaterial;
+  private quad: FullScreenQuad;
+
+  constructor(cam: THREE.PerspectiveCamera, lightPos: THREE.Vector3[], lightCol: THREE.Vector3[], half: number) {
+    super();
+    this.cam = cam;
+    this.rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType });
+    this.rt.texture.minFilter = THREE.LinearFilter;
+    this.rt.texture.magFilter = THREE.LinearFilter;
+    this.fogMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uCameraPos: { value: new THREE.Vector3() },
+        uInvProj: { value: new THREE.Matrix4() },
+        uCamWorld: { value: new THREE.Matrix4() },
+        uHalf: { value: half },
+        uDensity: { value: 0.95 },
+        uLightPos: { value: lightPos },
+        uLightCol: { value: lightCol },
+      },
+      vertexShader: fogVert,
+      fragmentShader: fogFrag,
+    });
+    this.compMat = new THREE.ShaderMaterial({
+      uniforms: { tScene: { value: null }, tFog: { value: this.rt.texture } },
+      vertexShader: fogVert,
+      fragmentShader: fogComposite,
+    });
+    this.quad = new FullScreenQuad(this.fogMat);
+  }
+
+  setTime(t: number): void { this.fogMat.uniforms.uTime.value = t; }
+
+  setSize(w: number, h: number): void {
+    this.rt.setSize(Math.max(1, Math.floor(w / 2)), Math.max(1, Math.floor(h / 2)));
+  }
+
+  render(renderer: THREE.WebGLRenderer, writeBuffer: THREE.WebGLRenderTarget, readBuffer: THREE.WebGLRenderTarget): void {
+    const u = this.fogMat.uniforms;
+    u.uCameraPos.value.copy(this.cam.position);
+    u.uInvProj.value.copy(this.cam.projectionMatrixInverse);
+    u.uCamWorld.value.copy(this.cam.matrixWorld);
+
+    // 1) March the volume into the half-res target (fog only).
+    this.quad.material = this.fogMat;
+    renderer.setRenderTarget(this.rt);
+    renderer.clear();
+    this.quad.render(renderer);
+
+    // 2) Composite fog over the full-res scene.
+    this.compMat.uniforms.tScene.value = readBuffer.texture;
+    this.quad.material = this.compMat;
+    renderer.setRenderTarget(this.renderToScreen ? null : writeBuffer);
+    if (this.clear) renderer.clear();
+    this.quad.render(renderer);
+  }
+}
+
+// ─── Post-processing: fog + bloom ───────────────────────────────────────────
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const fogPass = new VolumetricFogPass(camera, lightPosArr, lightColArr, HALF);
+composer.addPass(fogPass); // clouds first, so bloom blooms them too
+const bloom = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth, window.innerHeight),
+  0.55, // strength
+  0.5,  // radius
+  0.55, // threshold — only bright cores bloom, background stays dark
+);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+// No scene lights: every surface is emissive (nest/food) or a self-lit shader
+// (agents) and bloom carries the glow. Real THREE.PointLights were removed.
+
+// ─── Pheromone volumes ─────────────────────────────────────────────────────
+const homeField = new PheromoneVolume(GRID_SIZE);
+const foodField = new PheromoneVolume(GRID_SIZE);
 
 // ─── Nest ──────────────────────────────────────────────────────────────────
-let nestPos = NEST_START.clone();
-const nestGeo = new THREE.SphereGeometry(1, 28, 20);
-const nestMat = new THREE.ShaderMaterial({
-  uniforms: nestUniforms,
-  vertexShader: causticVertexShader,
-  fragmentShader: causticFragmentShader,
-  transparent: true,
-  blending: THREE.NormalBlending,
-  depthWrite: true,
+const nestPos = NEST_START.clone();
+const nestGeo = new THREE.SphereGeometry(1, 32, 24);
+const nestMat = new THREE.MeshStandardMaterial({
+  color: NEST_COLOR, emissive: NEST_COLOR, emissiveIntensity: 2.4,
+  roughness: 0.35, metalness: 0.0,
 });
 const nestMesh = new THREE.Mesh(nestGeo, nestMat);
 scene.add(nestMesh);
 
-// Nest light
-const nestLight = new THREE.PointLight(0x6688ff, 8.0, 50);
-scene.add(nestLight);
+simLights.push({ pos: nestPos, color: new THREE.Color(NEST_COLOR), intensity: 1.6 });
 
 function updateNestVisuals(): void {
   const s = PARAMS.nestRadius;
   nestMesh.position.copy(nestPos);
   nestMesh.scale.set(s, s, s);
-  nestLight.position.copy(nestPos);
 }
 updateNestVisuals();
 
@@ -206,209 +343,124 @@ const initialFood: Array<[number, number, number]> = [
   [-HALF + 8, -8, -HALF + 8],
 ];
 
-const foodSphereGeo = new THREE.SphereGeometry(1, 16, 12);
-const foodUniformsList: { uTime: { value: number }; uColor: { value: THREE.Color }; uIntensity: { value: number } }[] = [];
+const foodSphereGeo = new THREE.SphereGeometry(1, 24, 18);
 
 function addFood(wx: number, wy: number, wz: number): void {
-  if (
-    wx < -HALF || wx > HALF ||
-    wy < -HALF || wy > HALF ||
-    wz < -HALF || wz > HALF
-  ) return;
+  if (wx < -HALF || wx > HALF || wy < -HALF || wy > HALF || wz < -HALF || wz > HALF) return;
 
   foodSources3D.push({ x: wx, y: wy, z: wz, radius: PARAMS.foodRadius });
 
-  const fu = { uTime: { value: 0 }, uColor: { value: new THREE.Color(0x44dd88) }, uIntensity: { value: 1.0 } };
-  foodUniformsList.push(fu);
-
   const mesh = new THREE.Mesh(
-    foodSphereGeo.clone(),
-    new THREE.ShaderMaterial({
-      uniforms: fu,
-      vertexShader: causticVertexShader,
-      fragmentShader: causticFragmentShader,
-      transparent: true,
-      blending: THREE.NormalBlending,
-      depthWrite: true,
+    foodSphereGeo,
+    new THREE.MeshStandardMaterial({
+      color: FOOD_COLOR, emissive: FOOD_COLOR, emissiveIntensity: 2.2,
+      roughness: 0.35, metalness: 0.0,
     }),
   );
   mesh.position.set(wx, wy, wz);
-  const s = PARAMS.foodRadius / 2;
+  const s = PARAMS.foodRadius * 0.55;
   mesh.scale.set(s, s, s);
   scene.add(mesh);
   foodMeshes.push(mesh);
 
-  // Food light
-  const foodLight = new THREE.PointLight(0x44dd88, 6.0, 40);
-  foodLight.position.set(wx, wy, wz);
-  scene.add(foodLight);
+  // The food orb tints nearby agents + fog via its emitted colour.
+  simLights.push({ pos: mesh.position, color: new THREE.Color(FOOD_COLOR), intensity: 1.2 });
 }
 
-// Add initial food sources
-for (const [fx, fy, fz] of initialFood) {
-  addFood(fx, fy, fz);
-}
+for (const [fx, fy, fz] of initialFood) addFood(fx, fy, fz);
 
-// ─── Agents ────────────────────────────────────────────────────────────────
+// ─── Agents — cheap additive glass-glow shader ─────────────────────────────
 let agents = createAgents(PARAMS.antCount, NEST_START.x, NEST_START.y, NEST_START.z);
 
-// Glass/orb ShaderMaterial — Three.js injects instanceMatrix and instanceColor
-// automatically for InstancedMesh, so we don't declare them here.
 const agentUniforms = {
-  uTime: { value: 0 },
-  uNestLightPos: { value: new THREE.Vector3() },
-  uNestLightCol: { value: new THREE.Color(0x6688ff) },
-  uFoodLightPos: { value: new THREE.Vector3() },
-  uFoodLightCol: { value: new THREE.Color(0x44dd88) },
+  uLightPos: { value: lightPosArr },
+  uLightCol: { value: lightColArr },
 };
 
-const agentVertexShader = `
+const agentVert = `
   varying vec3 vNormal;
-  varying vec3 vViewPosition;
-  varying vec3 vColor;
   varying vec3 vWorldPos;
-
+  varying vec3 vViewDir;
+  varying vec3 vColor;
   void main() {
-    vec4 worldPos = instanceMatrix * vec4(position, 1.0);
-    vec3 worldNormal = normalize((instanceMatrix * vec4(normal, 0.0)).xyz);
-
-    vec4 mvPosition = viewMatrix * worldPos;
-    vViewPosition = -mvPosition.xyz;
-    vNormal = normalize(normalMatrix * worldNormal);
-    vWorldPos = worldPos.xyz;
+    vec4 wp = instanceMatrix * vec4(position, 1.0);
+    vWorldPos = wp.xyz;
+    vNormal = normalize(mat3(instanceMatrix) * normal);
+    vViewDir = normalize(cameraPosition - wp.xyz);
     vColor = instanceColor;
-    gl_Position = projectionMatrix * mvPosition;
+    gl_Position = projectionMatrix * viewMatrix * wp;
   }
 `;
 
-const agentFragmentShader = `
-  uniform float uTime;
-  uniform vec3 uNestLightPos;
-  uniform vec3 uNestLightCol;
-  uniform vec3 uFoodLightPos;
-  uniform vec3 uFoodLightCol;
-
+const agentFrag = `
+  uniform vec3 uLightPos[${MAX_AGENT_LIGHTS}];
+  uniform vec3 uLightCol[${MAX_AGENT_LIGHTS}];
   varying vec3 vNormal;
-  varying vec3 vViewPosition;
-  varying vec3 vColor;
   varying vec3 vWorldPos;
-
+  varying vec3 vViewDir;
+  varying vec3 vColor;
   void main() {
-    vec3 viewDir = normalize(vViewPosition);
-    vec3 normal = normalize(vNormal);
+    vec3 n = normalize(vNormal);
+    vec3 v = normalize(vViewDir);
+    float fres = pow(1.0 - max(dot(n, v), 0.0), 3.0);
 
-    // Fresnel rim
-    float fresnel = pow(1.0 - abs(dot(viewDir, normal)), 2.6);
+    // Glassy core: dim centre, brighter fresnel rim, in the agent's state colour.
+    vec3 col = vColor * 0.2 + vColor * fres * 1.05;
 
-    // Caustic shimmer — 3D position-based animated noise
-    float caustic = sin(vWorldPos.x * 10.0 + uTime * 0.9)
-                  * cos(vWorldPos.y * 9.0  + uTime * 0.7)
-                  * sin(vWorldPos.z * 11.0 + uTime * 1.1);
-    caustic = caustic * 0.5 + 0.5;
-
-    // Core glow
-    float ndotl = max(0.0, dot(normal, viewDir));
-    float core = pow(ndotl, 0.6);
-    float sparkle = pow(caustic, 4.0) * 0.5;
-
-    // Glass base colour (internal glow)
-    vec3 col = vColor * (0.25 + 0.45 * core + 0.55 * fresnel + 0.20 * caustic + sparkle);
-
-    // ── Custom per-light contribution ───────────────────────────────
-
-    float lightDecay = 0.04; // gentler falloff so light travels visibly
-
-    // Nest light
-    vec3 toNest = uNestLightPos - vWorldPos;
-    float nestDist = length(toNest);
-    float nestAtt = 1.0 / (1.0 + lightDecay * nestDist * nestDist);
-    float nestDiff = max(0.0, dot(normal, normalize(toNest)));
-    // Glass body transmits light through the centre, reflects at edges
-    float transmission = 1.0 - fresnel * 0.7;
-    vec3 nestLight = uNestLightCol * nestDiff * nestAtt * transmission * 1.5;
-
-    // Food light (aggregate — centroid of all food sources)
-    vec3 toFood = uFoodLightPos - vWorldPos;
-    float foodDist = length(toFood);
-    float foodAtt = 1.0 / (1.0 + lightDecay * foodDist * foodDist);
-    float foodDiff = max(0.0, dot(normal, normalize(toFood)));
-    vec3 foodLight = uFoodLightCol * foodDiff * foodAtt * transmission * 1.5;
-
-    // Combine and blend through the glass body
-    vec3 lightAccum = nestLight + foodLight;
-    col = col + lightAccum * 0.6;
-
-    float alpha = 0.35 + 0.65 * fresnel;
-
-    gl_FragColor = vec4(col, alpha);
+    // Pick up colour from nearby lights (diffuse + soft wrap).
+    for (int i = 0; i < ${MAX_AGENT_LIGHTS}; i++) {
+      vec3 toL = uLightPos[i] - vWorldPos;
+      float d2 = dot(toL, toL);
+      float att = 1.0 / (1.0 + 0.03 * d2);
+      float diff = max(dot(n, normalize(toL)), 0.0);
+      col += uLightCol[i] * att * (0.15 + 0.4 * diff);
+    }
+    gl_FragColor = vec4(col, 1.0);
   }
 `;
 
-let agentGeo = new THREE.IcosahedronGeometry(0.5, 2);
-let agentMat = new THREE.ShaderMaterial({
+const agentMat = new THREE.ShaderMaterial({
   uniforms: agentUniforms,
-  vertexShader: agentVertexShader,
-  fragmentShader: agentFragmentShader,
+  vertexShader: agentVert,
+  fragmentShader: agentFrag,
   transparent: true,
-  blending: THREE.NormalBlending,
+  blending: THREE.AdditiveBlending,
   depthWrite: false,
 });
+
+let agentGeo = new THREE.IcosahedronGeometry(0.55, 1);
 let agentMesh = new THREE.InstancedMesh(agentGeo, agentMat, agents.length);
-agentMesh.instanceColor = new THREE.InstancedBufferAttribute(
-  new Float32Array(agents.length * 3), 3,
-);
-agentMesh.count = agents.length;
+agentMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(agents.length * 3), 3);
 scene.add(agentMesh);
 
 const tmpVec = new THREE.Vector3();
 const tmpColor = new THREE.Color();
 const tmpMat = new THREE.Matrix4();
-const FORAGE_COLOR = new THREE.Color(0x44f9e0);
-const RETURN_COLOR = new THREE.Color(0xff8c44);
+const FORAGE_COLOR = new THREE.Color(0x35e0d0); // teal — searching
+const RETURN_COLOR = new THREE.Color(0xff9a3c); // orange — carrying food
 
 function rebuildAgents(): void {
   scene.remove(agentMesh);
+  agentMesh.dispose();
   agentGeo.dispose();
-  agentMat.dispose();
-
   agents = createAgents(PARAMS.antCount, nestPos.x, nestPos.y, nestPos.z);
-  agentGeo = new THREE.IcosahedronGeometry(0.5, 2);
-  agentMat = new THREE.ShaderMaterial({
-    uniforms: {
-      uTime: agentUniforms.uTime,
-      uNestLightPos: agentUniforms.uNestLightPos,
-      uNestLightCol: agentUniforms.uNestLightCol,
-      uFoodLightPos: agentUniforms.uFoodLightPos,
-      uFoodLightCol: agentUniforms.uFoodLightCol,
-    },
-    vertexShader: agentVertexShader,
-    fragmentShader: agentFragmentShader,
-    transparent: true,
-    blending: THREE.NormalBlending,
-    depthWrite: false,
-  });
+  agentGeo = new THREE.IcosahedronGeometry(0.55, 1);
   agentMesh = new THREE.InstancedMesh(agentGeo, agentMat, agents.length);
-  agentMesh.instanceColor = new THREE.InstancedBufferAttribute(
-    new Float32Array(agents.length * 3), 3,
-  );
-  agentMesh.count = agents.length;
+  agentMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(agents.length * 3), 3);
   scene.add(agentMesh);
 }
 
 function updateAgentMeshes(): void {
   const colorArr = agentMesh.instanceColor!.array as Float32Array;
-  const now = Date.now();
+  const now = performance.now();
   for (let i = 0; i < agents.length; i++) {
     const a = agents[i];
     tmpVec.set(a.x, a.y, a.z);
-    tmpMat.identity();
-    tmpMat.setPosition(tmpVec);
+    tmpMat.makeTranslation(tmpVec.x, tmpVec.y, tmpVec.z);
     agentMesh.setMatrixAt(i, tmpMat);
 
-    const isReturning = a.state === STATE_FORAGING;
-    const c = isReturning ? FORAGE_COLOR : RETURN_COLOR;
-    tmpColor.copy(c);
-    const pulse = 0.6 + 0.4 * Math.sin(now / 250 + i * 0.15);
+    tmpColor.copy(a.state === STATE_FORAGING ? FORAGE_COLOR : RETURN_COLOR);
+    const pulse = 0.75 + 0.25 * Math.sin(now / 320 + i * 0.6);
     tmpColor.multiplyScalar(pulse);
     colorArr[i * 3] = tmpColor.r;
     colorArr[i * 3 + 1] = tmpColor.g;
@@ -424,35 +476,30 @@ const mouseHandler = new MouseHandler(
   renderer.domElement,
   {
     onPlaceFood: (x, y, z) => addFood(x, y, z),
-    onStartNestDrag: () => {
-      nestUniforms.uIntensity.value = 1.5;
-    },
+    onStartNestDrag: () => { nestMat.emissiveIntensity = 3.4; },
     onDragNest: (x, y, z) => {
-      nestPos.set(x, y, z);
-      nestPos.x = Math.max(-HALF + 2, Math.min(HALF - 2, nestPos.x));
-      nestPos.y = Math.max(-HALF + 2, Math.min(HALF - 2, nestPos.y));
-      nestPos.z = Math.max(-HALF + 2, Math.min(HALF - 2, nestPos.z));
+      nestPos.set(
+        Math.max(-HALF + 2, Math.min(HALF - 2, x)),
+        Math.max(-HALF + 2, Math.min(HALF - 2, y)),
+        Math.max(-HALF + 2, Math.min(HALF - 2, z)),
+      );
       updateNestVisuals();
-      // Clear pheromones near new nest position
       const gx = (nestPos.x + HALF) * WORLD_TO_GRID;
       const gy = (nestPos.y + HALF) * WORLD_TO_GRID;
       const gz = (nestPos.z + HALF) * WORLD_TO_GRID;
-      pheromones.clearSphere(gx, gy, gz, PARAMS.nestRadius * WORLD_TO_GRID + 2);
+      const r = PARAMS.nestRadius * WORLD_TO_GRID + 2;
+      homeField.clearSphere(gx, gy, gz, r);
+      foodField.clearSphere(gx, gy, gz, r);
     },
-    onEndNestDrag: () => {
-      nestUniforms.uIntensity.value = 1.0;
-    },
+    onEndNestDrag: () => { nestMat.emissiveIntensity = 2.4; },
     onStartFoodDrag: () => {},
     onDragFood: (i, x, y, z) => {
       const half = HALF - 2;
-      foodMeshes[i].position.set(
-        Math.max(-half, Math.min(half, x)),
-        Math.max(-half, Math.min(half, y)),
-        Math.max(-half, Math.min(half, z)),
-      );
-      foodSources3D[i].x = foodMeshes[i].position.x;
-      foodSources3D[i].y = foodMeshes[i].position.y;
-      foodSources3D[i].z = foodMeshes[i].position.z;
+      const fx = Math.max(-half, Math.min(half, x));
+      const fy = Math.max(-half, Math.min(half, y));
+      const fz = Math.max(-half, Math.min(half, z));
+      foodMeshes[i].position.set(fx, fy, fz);
+      foodSources3D[i].x = fx; foodSources3D[i].y = fy; foodSources3D[i].z = fz;
     },
     onEndFoodDrag: () => {},
   },
@@ -468,85 +515,41 @@ window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  composer.setSize(window.innerWidth, window.innerHeight);
 });
 
 // ─── HUD ───────────────────────────────────────────────────────────────────
 const hud = new HUD();
 
-// ─── Param changes ─────────────────────────────────────────────────────────
 window.addEventListener("param-change", ((e: CustomEvent) => {
-  if (e.detail.key === "antCount") {
-    rebuildAgents();
-  }
+  if (e.detail.key === "antCount") rebuildAgents();
 }) as EventListener);
 
 // ─── Main Loop ─────────────────────────────────────────────────────────────
 let animTime = 0;
-const dustVelocities: Float32Array = new Float32Array(DUST_COUNT * 3);
-for (let i = 0; i < DUST_COUNT * 3; i++) {
-  dustVelocities[i] = (Math.random() - 0.5) * 0.02;
-}
 
 function frame(): void {
   requestAnimationFrame(frame);
   animTime += 0.016;
 
-  // 1. Update agents
-  updateAgents(agents, pheromones, foodSources3D, nestPos.x, nestPos.y, nestPos.z, PARAMS.cubeSize);
+  updateAgents(agents, homeField, foodField, foodSources3D, nestPos.x, nestPos.y, nestPos.z, PARAMS.cubeSize);
+  homeField.step(PARAMS.pheromoneDecay);
+  foodField.step(PARAMS.pheromoneDecay);
 
-  // 2. Step pheromone volume
-  pheromones.step(PARAMS.pheromoneDecay);
-
-  // 3. Update agent mesh positions
   updateAgentMeshes();
+  updateLightUniforms();
+  fogPass.setTime(animTime);
 
-  // 4. Advance shader uniforms
-  agentUniforms.uTime.value = animTime;
-  agentUniforms.uNestLightPos.value.copy(nestPos);
-  // Aggregate food light: centroid of all food sources
-  if (foodMeshes.length > 0) {
-    const avg = new THREE.Vector3();
-    for (const fm of foodMeshes) avg.add(fm.position);
-    avg.divideScalar(foodMeshes.length);
-    agentUniforms.uFoodLightPos.value.copy(avg);
-  }
-
-  // 5. Animate dust particles (slow drift)
-  const dPos = dustPoints.geometry.attributes.position.array as Float32Array;
-  for (let i = 0; i < DUST_COUNT; i++) {
-    const i3 = i * 3;
-    dPos[i3] += dustVelocities[i3];
-    dPos[i3 + 1] += dustVelocities[i3 + 1];
-    dPos[i3 + 2] += dustVelocities[i3 + 2];
-    // Wrap
-    if (dPos[i3] > HALF) dPos[i3] = -HALF;
-    if (dPos[i3] < -HALF) dPos[i3] = HALF;
-    if (dPos[i3 + 1] > HALF) dPos[i3 + 1] = -HALF;
-    if (dPos[i3 + 1] < -HALF) dPos[i3 + 1] = HALF;
-    if (dPos[i3 + 2] > HALF) dPos[i3 + 2] = -HALF;
-    if (dPos[i3 + 2] < -HALF) dPos[i3 + 2] = HALF;
-  }
-  dustPoints.geometry.attributes.position.needsUpdate = true;
-
-  // 5. Advance caustic uniforms
-  nestUniforms.uTime.value = animTime;
-  nestUniforms.uIntensity.value = 0.7 + 0.5 * (0.5 + 0.5 * Math.sin(animTime * 0.6));
-  for (const fu of foodUniformsList) {
-    fu.uTime.value = animTime;
-  }
-
-  // 6. Animate food patches
-  const foodPulse = 0.5 + 0.5 * Math.sin(animTime * 1.2);
+  // Breathing glow on the source orbs.
+  nestMat.emissiveIntensity = 1.3 + 0.4 * (0.5 + 0.5 * Math.sin(animTime * 0.6));
+  const foodPulse = 1.1 + 0.5 * (0.5 + 0.5 * Math.sin(animTime * 1.2));
   for (let i = 0; i < foodMeshes.length; i++) {
-    foodUniformsList[i].uIntensity.value = 0.6 + 0.5 * foodPulse;
-    const s = (PARAMS.foodRadius / 2) * (0.9 + 0.1 * foodPulse);
+    (foodMeshes[i].material as THREE.MeshStandardMaterial).emissiveIntensity = foodPulse;
+    const s = PARAMS.foodRadius * 0.55 * (0.92 + 0.08 * Math.sin(animTime * 1.2 + i));
     foodMeshes[i].scale.set(s, s, s);
   }
 
-  // 7. Render
-  renderer.render(scene, camera);
-
-  // 8. HUD
+  composer.render();
   hud.tick(agents.length);
 }
 
