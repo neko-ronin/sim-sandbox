@@ -27,6 +27,8 @@ export interface Agent3D {
   state: number;
   /** Remaining deposit strength, [0..1], reset to 1 at each anchor. */
   trail: number;
+  /** Resource units this agent is carrying back to the nest (0 when foraging). */
+  carrying: number;
 }
 
 export interface FoodSource3D {
@@ -34,6 +36,10 @@ export interface FoodSource3D {
   y: number;
   z: number;
   radius: number;
+  /** Remaining resource units. Drained on pickup; food is deleted at 0. */
+  value: number;
+  /** Starting value, kept for the size-vs-state ratio. */
+  capacity: number;
 }
 
 const GRID = 32; // must match the PheromoneVolume resolution in main.ts
@@ -67,6 +73,7 @@ export function createAgents(count: number, nx: number, ny: number, nz: number):
       vz: d.z,
       state: STATE_FORAGING, // everyone starts outbound from the nest
       trail: 1,
+      carrying: 0,
     });
   }
   return agents;
@@ -156,6 +163,7 @@ export function updateAgents(
       let seenDx = 0, seenDy = 0, seenDz = 0, seenBest = vision2;
       for (let f = 0; f < foodSources.length; f++) {
         const fs = foodSources[f];
+        if (fs.value <= 0) continue; // don't chase a spent source
         const dx = fs.x - x, dy = fs.y - y, dz = fs.z - z;
         const d2 = dx * dx + dy * dy + dz * dz;
         if (d2 < seenBest) { seenBest = d2; seenDx = dx; seenDy = dy; seenDz = dz; }
@@ -225,18 +233,24 @@ export function updateAgents(
     if (a.state === STATE_FORAGING) {
       for (let f = 0; f < foodSources.length; f++) {
         const fs = foodSources[f];
+        if (fs.value <= 0) continue; // already spent — main will delete it
         const dx = x - fs.x, dy = y - fs.y, dz = z - fs.z;
         if (dx * dx + dy * dy + dz * dz < fs.radius * fs.radius) {
-          a.state = STATE_RETURNING;
-          a.trail = 1; // anchor the FOOD trail here
+          // Resource transfer event: value leaves the food, onto the ant.
+          const amount = Math.min(PARAMS.foodTransfer, fs.value);
+          fs.value -= amount;
+          a.carrying = amount;
+          a.state = STATE_RETURNING; // teal → orange
+          a.trail = 1;               // anchor the FOOD trail here
           break;
         }
       }
     } else {
       const dx = x - nestX, dy = y - nestY, dz = z - nestZ;
       if (dx * dx + dy * dy + dz * dz < nestR * nestR) {
-        a.state = STATE_FORAGING;
-        a.trail = 1; // anchor the HOME trail here
+        a.carrying = 0;            // delivered to the colony
+        a.state = STATE_FORAGING;  // orange → teal
+        a.trail = 1;               // anchor the HOME trail here
       }
     }
 

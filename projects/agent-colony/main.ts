@@ -33,6 +33,8 @@ const WORLD_TO_GRID = GRID_SIZE / PARAMS.cubeSize;
 const NEST_START = new THREE.Vector3(-8, 4, -8);
 const NEST_COLOR = 0x5b8cff;
 const FOOD_COLOR = 0x3ad17a;
+const NEST_GLOW = 2.4; // steady emissive; higher than food's 1.6 since blue
+                       // reads dimmer than green at equal intensity
 const MAX_AGENT_LIGHTS = 10; // glow sources sampled by the agent shader (fixed array)
 
 // A glow source the volumetric fog + agent shader sample for colour. Not a real
@@ -319,7 +321,7 @@ const foodField = new PheromoneVolume(GRID_SIZE);
 const nestPos = NEST_START.clone();
 const nestGeo = new THREE.SphereGeometry(1, 32, 24);
 const nestMat = new THREE.MeshStandardMaterial({
-  color: NEST_COLOR, emissive: NEST_COLOR, emissiveIntensity: 2.4,
+  color: NEST_COLOR, emissive: NEST_COLOR, emissiveIntensity: NEST_GLOW,
   roughness: 0.35, metalness: 0.0,
 });
 const nestMesh = new THREE.Mesh(nestGeo, nestMat);
@@ -335,8 +337,12 @@ function updateNestVisuals(): void {
 updateNestVisuals();
 
 // ─── Food sources ──────────────────────────────────────────────────────────
+// foodSources3D / foodMeshes / foodSimLights are kept index-aligned; removeFood
+// splices all three together when a source is exhausted.
 const foodSources3D: FoodSource3D[] = [];
 const foodMeshes: THREE.Mesh[] = [];
+const foodSimLights: SimLight[] = [];
+const FOOD_BASE_SIZE = PARAMS.foodRadius * 0.55;
 
 const initialFood: Array<[number, number, number]> = [
   [HALF - 8, 6, HALF - 8],
@@ -350,7 +356,10 @@ const foodSphereGeo = new THREE.SphereGeometry(1, 24, 18);
 function addFood(wx: number, wy: number, wz: number): void {
   if (wx < -HALF || wx > HALF || wy < -HALF || wy > HALF || wz < -HALF || wz > HALF) return;
 
-  foodSources3D.push({ x: wx, y: wy, z: wz, radius: PARAMS.foodRadius });
+  foodSources3D.push({
+    x: wx, y: wy, z: wz, radius: PARAMS.foodRadius,
+    value: PARAMS.foodValue, capacity: PARAMS.foodValue,
+  });
 
   const mesh = new THREE.Mesh(
     foodSphereGeo,
@@ -360,13 +369,29 @@ function addFood(wx: number, wy: number, wz: number): void {
     }),
   );
   mesh.position.set(wx, wy, wz);
-  const s = PARAMS.foodRadius * 0.55;
-  mesh.scale.set(s, s, s);
+  mesh.scale.setScalar(FOOD_BASE_SIZE);
   scene.add(mesh);
   foodMeshes.push(mesh);
 
   // The food orb tints nearby agents + fog via its emitted colour.
-  simLights.push({ pos: mesh.position, color: new THREE.Color(FOOD_COLOR), intensity: 1.2 });
+  const light: SimLight = { pos: mesh.position, color: new THREE.Color(FOOD_COLOR), intensity: 1.2 };
+  simLights.push(light);
+  foodSimLights.push(light);
+}
+
+// Exhausted source: drop the mesh + its light and free GPU resources. The
+// geometry is shared across all food, so only the material is disposed.
+function removeFood(i: number): void {
+  const mesh = foodMeshes[i];
+  scene.remove(mesh);
+  (mesh.material as THREE.Material).dispose();
+
+  const li = simLights.indexOf(foodSimLights[i]);
+  if (li >= 0) simLights.splice(li, 1);
+
+  foodSources3D.splice(i, 1);
+  foodMeshes.splice(i, 1);
+  foodSimLights.splice(i, 1);
 }
 
 for (const [fx, fy, fz] of initialFood) addFood(fx, fy, fz);
@@ -493,8 +518,8 @@ const mouseHandler = new MouseHandler(
       homeField.clearSphere(gx, gy, gz, r);
       foodField.clearSphere(gx, gy, gz, r);
     },
-    onEndNestDrag: () => { nestMat.emissiveIntensity = 2.4; },
-    onStartFoodDrag: () => {},
+    onEndNestDrag: () => { nestMat.emissiveIntensity = NEST_GLOW; },
+    onStartFoodDrag: () => { },
     onDragFood: (i, x, y, z) => {
       const half = HALF - 2;
       const fx = Math.max(-half, Math.min(half, x));
@@ -503,7 +528,7 @@ const mouseHandler = new MouseHandler(
       foodMeshes[i].position.set(fx, fy, fz);
       foodSources3D[i].x = fx; foodSources3D[i].y = fy; foodSources3D[i].z = fz;
     },
-    onEndFoodDrag: () => {},
+    onEndFoodDrag: () => { },
   },
   () => nestPos.clone(),
   nestMesh,
@@ -543,13 +568,17 @@ function frame(): void {
   updateLightUniforms();
   fogPass.setTime(animTime);
 
-  // Breathing glow on the source orbs.
-  nestMat.emissiveIntensity = 1.3 + 0.4 * (0.5 + 0.5 * Math.sin(animTime * 0.6));
-  const foodPulse = 1.1 + 0.5 * (0.5 + 0.5 * Math.sin(animTime * 1.2));
-  for (let i = 0; i < foodMeshes.length; i++) {
+  // Nest holds a steady glow (set at creation); the food orbs breathe and
+  // shrink toward empty. Iterate backwards so spent sources can be spliced out.
+  const foodPulse = 1.38 + 0.5 * (0.5 + 0.5 * Math.sin(animTime * 1.2));
+  for (let i = foodMeshes.length - 1; i >= 0; i--) {
+    const fs = foodSources3D[i];
+    if (fs.value <= 0) { removeFood(i); continue; } // fully drained → gone
     (foodMeshes[i].material as THREE.MeshStandardMaterial).emissiveIntensity = foodPulse;
-    const s = PARAMS.foodRadius * 0.55 * (0.92 + 0.08 * Math.sin(animTime * 1.2 + i));
-    foodMeshes[i].scale.set(s, s, s);
+    // Size tracks remaining value (never quite zero until it's deleted).
+    const ratio = fs.value / fs.capacity;
+    const breathe = 0.92 + 0.08 * Math.sin(animTime * 1.2 + i);
+    foodMeshes[i].scale.setScalar(FOOD_BASE_SIZE * (0.1 + 0.9 * ratio) * breathe);
   }
 
   composer.render();

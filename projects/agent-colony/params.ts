@@ -25,6 +25,10 @@ export interface SimParams {
   cubeSize: number;
   /** Opacity/thickness of the volumetric cloud (0 = off). */
   cloudDensity: number;
+  /** Starting resource units a new food source holds. */
+  foodValue: number;
+  /** Resource units removed per ant pickup. */
+  foodTransfer: number;
 }
 
 export const PARAMS: SimParams = {
@@ -41,4 +45,6 @@ export const PARAMS: SimParams = {
   foodRadius: 3,
   cubeSize: 50,
   cloudDensity: 0.95,
+  foodValue: 60,
+  foodTransfer: 1,
 };
