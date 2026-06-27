@@ -18,8 +18,8 @@ const NEST_START = new THREE.Vector3(-8, 4, -8);
 
 // ─── Scene ─────────────────────────────────────────────────────────────────
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0a0a20);
-scene.fog = new THREE.FogExp2(0x0a0a20, 0.012);
+scene.background = new THREE.Color(0x05060f);
+scene.fog = new THREE.FogExp2(0x05060f, 0.012);
 
 // ─── Renderer ──────────────────────────────────────────────────────────────
 let renderer: THREE.WebGLRenderer;
@@ -94,38 +94,6 @@ const topLight = new THREE.DirectionalLight(0x8888ff, 0.3);
 topLight.position.set(0, 30, 0);
 scene.add(topLight);
 
-// ─── Vivarium cube (wireframe) ─────────────────────────────────────────────
-const cubeGeo = new THREE.BoxGeometry(PARAMS.cubeSize, PARAMS.cubeSize, PARAMS.cubeSize);
-const edges = new THREE.EdgesGeometry(cubeGeo);
-const edgeMat = new THREE.LineBasicMaterial({
-  color: 0x2a2e5a,
-  transparent: true,
-  opacity: 0.3,
-});
-const cubeFrame = new THREE.LineSegments(edges, edgeMat);
-scene.add(cubeFrame);
-
-// Corner markers (small glowing dots at each corner)
-const cornerMat = new THREE.PointsMaterial({
-  color: 0x4a5080,
-  size: 0.6,
-  transparent: true,
-  opacity: 0.4,
-  sizeAttenuation: true,
-});
-const cornerPositions: number[] = [];
-for (let sx of [-1, 1]) {
-  for (let sy of [-1, 1]) {
-    for (let sz of [-1, 1]) {
-      cornerPositions.push(sx * HALF, sy * HALF, sz * HALF);
-    }
-  }
-}
-const cornerGeo = new THREE.BufferGeometry();
-cornerGeo.setAttribute("position", new THREE.Float32BufferAttribute(cornerPositions, 3));
-const cornerPoints = new THREE.Points(cornerGeo, cornerMat);
-scene.add(cornerPoints);
-
 // ─── Ambient dust particles ────────────────────────────────────────────────
 const DUST_COUNT = 800;
 const dustGeo = new THREE.BufferGeometry();
@@ -155,40 +123,75 @@ scene.add(dustPoints);
 // ─── Pheromone volume ─────────────────────────────────────────────────────
 const pheromones = new PheromoneVolume(GRID_SIZE);
 
+// ─── Shared caustic shader for nest and food ───────────────────────────
+const causticVertexShader = `
+  varying vec3 vNormal;
+  varying vec3 vViewPosition;
+  varying vec3 vWorldPos;
+
+  void main() {
+    vec4 worldPos = modelMatrix * vec4(position, 1.0);
+    vec4 mvPosition = viewMatrix * worldPos;
+    vViewPosition = -mvPosition.xyz;
+    vNormal = normalize(normalMatrix * normal);
+    vWorldPos = worldPos.xyz;
+    gl_Position = projectionMatrix * mvPosition;
+  }
+`;
+
+const causticFragmentShader = `
+  uniform float uTime;
+  uniform vec3 uColor;
+  uniform float uIntensity;
+
+  varying vec3 vNormal;
+  varying vec3 vViewPosition;
+  varying vec3 vWorldPos;
+
+  void main() {
+    vec3 viewDir = normalize(vViewPosition);
+    vec3 normal = normalize(vNormal);
+
+    float fresnel = pow(1.0 - abs(dot(viewDir, normal)), 2.6);
+    float caustic = sin(vWorldPos.x * 10.0 + uTime * 0.9)
+                  * cos(vWorldPos.y * 9.0  + uTime * 0.7)
+                  * sin(vWorldPos.z * 11.0 + uTime * 1.1);
+    caustic = caustic * 0.5 + 0.5;
+    float ndotl = max(0.0, dot(normal, viewDir));
+    float core = pow(ndotl, 0.6);
+    float sparkle = pow(caustic, 4.0) * 0.4;
+
+    vec3 col = uColor * (0.3 + 0.5 * core + 0.4 * fresnel + 0.2 * caustic + sparkle);
+    float alpha = 0.4 + 0.6 * fresnel;
+    gl_FragColor = vec4(col * uIntensity, alpha);
+  }
+`;
+
+const nestUniforms = { uTime: { value: 0 }, uColor: { value: new THREE.Color(0x6688ff) }, uIntensity: { value: 1.0 } };
+
 // ─── Nest ──────────────────────────────────────────────────────────────────
 let nestPos = NEST_START.clone();
 const nestGeo = new THREE.SphereGeometry(1, 28, 20);
-const nestMat = new THREE.MeshStandardMaterial({
-  color: 0x6688ff,
-  emissive: 0x6688ff,
-  emissiveIntensity: 0.5,
+const nestMat = new THREE.ShaderMaterial({
+  uniforms: nestUniforms,
+  vertexShader: causticVertexShader,
+  fragmentShader: causticFragmentShader,
   transparent: true,
-  opacity: 0.75,
-  roughness: 0.2,
-  metalness: 0.0,
+  blending: THREE.NormalBlending,
+  depthWrite: true,
 });
 const nestMesh = new THREE.Mesh(nestGeo, nestMat);
-
-// Nest glow aura (transparent sphere)
-const auraGeo = new THREE.SphereGeometry(1.3, 20, 16);
-const auraMat = new THREE.MeshBasicMaterial({
-  color: 0x6688ff,
-  transparent: true,
-  opacity: 0.1,
-  side: THREE.BackSide,
-  blending: THREE.AdditiveBlending,
-});
-const auraMesh = new THREE.Mesh(auraGeo, auraMat);
-
 scene.add(nestMesh);
-scene.add(auraMesh);
+
+// Nest light
+const nestLight = new THREE.PointLight(0x6688ff, 2.0, 30);
+scene.add(nestLight);
 
 function updateNestVisuals(): void {
   const s = PARAMS.nestRadius;
   nestMesh.position.copy(nestPos);
   nestMesh.scale.set(s, s, s);
-  auraMesh.position.copy(nestPos);
-  auraMesh.scale.set(s * 1.3, s * 1.3, s * 1.3);
+  nestLight.position.copy(nestPos);
 }
 updateNestVisuals();
 
@@ -204,15 +207,7 @@ const initialFood: Array<[number, number, number]> = [
 ];
 
 const foodSphereGeo = new THREE.SphereGeometry(1, 16, 12);
-const foodMat = new THREE.MeshStandardMaterial({
-  color: 0x44dd88,
-  emissive: 0x44dd88,
-  emissiveIntensity: 0.4,
-  transparent: true,
-  opacity: 0.7,
-  roughness: 0.3,
-  metalness: 0.1,
-});
+const foodUniformsList: { uTime: { value: number }; uColor: { value: THREE.Color }; uIntensity: { value: number } }[] = [];
 
 function addFood(wx: number, wy: number, wz: number): void {
   if (
@@ -223,15 +218,33 @@ function addFood(wx: number, wy: number, wz: number): void {
 
   foodSources3D.push({ x: wx, y: wy, z: wz, radius: PARAMS.foodRadius });
 
-  const mesh = new THREE.Mesh(foodSphereGeo.clone(), foodMat.clone());
+  const fu = { uTime: { value: 0 }, uColor: { value: new THREE.Color(0x44dd88) }, uIntensity: { value: 1.0 } };
+  foodUniformsList.push(fu);
+
+  const mesh = new THREE.Mesh(
+    foodSphereGeo.clone(),
+    new THREE.ShaderMaterial({
+      uniforms: fu,
+      vertexShader: causticVertexShader,
+      fragmentShader: causticFragmentShader,
+      transparent: true,
+      blending: THREE.NormalBlending,
+      depthWrite: true,
+    }),
+  );
   mesh.position.set(wx, wy, wz);
   const s = PARAMS.foodRadius / 2;
   mesh.scale.set(s, s, s);
   scene.add(mesh);
   foodMeshes.push(mesh);
+
+  // Food light
+  const foodLight = new THREE.PointLight(0x44dd88, 2.0, 25);
+  foodLight.position.set(wx, wy, wz);
+  scene.add(foodLight);
 }
 
-// Also add food-aura ring effect
+// Add initial food sources
 for (const [fx, fy, fz] of initialFood) {
   addFood(fx, fy, fz);
 }
@@ -239,10 +252,74 @@ for (const [fx, fy, fz] of initialFood) {
 // ─── Agents ────────────────────────────────────────────────────────────────
 let agents = createAgents(PARAMS.antCount, NEST_START.x, NEST_START.y, NEST_START.z);
 
-let agentGeo = new THREE.SphereGeometry(0.6, 12, 8);
-let agentMat = new THREE.MeshBasicMaterial({
+// Glass/orb ShaderMaterial — Three.js injects instanceMatrix and instanceColor
+// automatically for InstancedMesh, so we don't declare them here.
+const agentUniforms = {
+  uTime: { value: 0 },
+};
+
+const agentVertexShader = `
+  varying vec3 vNormal;
+  varying vec3 vViewPosition;
+  varying vec3 vColor;
+  varying vec3 vWorldPos;
+
+  void main() {
+    vec4 worldPos = instanceMatrix * vec4(position, 1.0);
+    vec3 worldNormal = normalize((instanceMatrix * vec4(normal, 0.0)).xyz);
+
+    vec4 mvPosition = viewMatrix * worldPos;
+    vViewPosition = -mvPosition.xyz;
+    vNormal = normalize(normalMatrix * worldNormal);
+    vWorldPos = worldPos.xyz;
+    vColor = instanceColor;
+    gl_Position = projectionMatrix * mvPosition;
+  }
+`;
+
+const agentFragmentShader = `
+  uniform float uTime;
+
+  varying vec3 vNormal;
+  varying vec3 vViewPosition;
+  varying vec3 vColor;
+  varying vec3 vWorldPos;
+
+  void main() {
+    vec3 viewDir = normalize(vViewPosition);
+    vec3 normal = normalize(vNormal);
+
+    // Fresnel rim (bright at glancing angles, transparent at centre)
+    float fresnel = pow(1.0 - abs(dot(viewDir, normal)), 2.6);
+
+    // Caustic shimmer — 3D position-based animated noise
+    float caustic = sin(vWorldPos.x * 10.0 + uTime * 0.9)
+                  * cos(vWorldPos.y * 9.0  + uTime * 0.7)
+                  * sin(vWorldPos.z * 11.0 + uTime * 1.1);
+    caustic = caustic * 0.5 + 0.5;
+
+    // Core glow
+    float ndotl = max(0.0, dot(normal, viewDir));
+    float core = pow(ndotl, 0.6);
+
+    // Glass-like inner refraction sparkle
+    float sparkle = pow(caustic, 4.0) * 0.5;
+
+    vec3 col = vColor * (0.25 + 0.45 * core + 0.55 * fresnel + 0.20 * caustic + sparkle);
+
+    float alpha = 0.35 + 0.65 * fresnel;
+
+    gl_FragColor = vec4(col, alpha);
+  }
+`;
+
+let agentGeo = new THREE.IcosahedronGeometry(0.5, 2);
+let agentMat = new THREE.ShaderMaterial({
+  uniforms: agentUniforms,
+  vertexShader: agentVertexShader,
+  fragmentShader: agentFragmentShader,
   transparent: true,
-  blending: THREE.AdditiveBlending,
+  blending: THREE.NormalBlending,
   depthWrite: false,
 });
 let agentMesh = new THREE.InstancedMesh(agentGeo, agentMat, agents.length);
@@ -264,10 +341,13 @@ function rebuildAgents(): void {
   agentMat.dispose();
 
   agents = createAgents(PARAMS.antCount, nestPos.x, nestPos.y, nestPos.z);
-  agentGeo = new THREE.SphereGeometry(0.6, 12, 8);
-  agentMat = new THREE.MeshBasicMaterial({
+  agentGeo = new THREE.IcosahedronGeometry(0.5, 2);
+  agentMat = new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: agentUniforms.uTime.value } },
+    vertexShader: agentVertexShader,
+    fragmentShader: agentFragmentShader,
     transparent: true,
-    blending: THREE.AdditiveBlending,
+    blending: THREE.NormalBlending,
     depthWrite: false,
   });
   agentMesh = new THREE.InstancedMesh(agentGeo, agentMat, agents.length);
@@ -308,7 +388,7 @@ const mouseHandler = new MouseHandler(
   {
     onPlaceFood: (x, y, z) => addFood(x, y, z),
     onStartNestDrag: () => {
-      nestMat.emissiveIntensity = 1.0;
+      nestUniforms.uIntensity.value = 1.5;
     },
     onDragNest: (x, y, z) => {
       nestPos.set(x, y, z);
@@ -323,11 +403,25 @@ const mouseHandler = new MouseHandler(
       pheromones.clearSphere(gx, gy, gz, PARAMS.nestRadius * WORLD_TO_GRID + 2);
     },
     onEndNestDrag: () => {
-      nestMat.emissiveIntensity = 0.5;
+      nestUniforms.uIntensity.value = 1.0;
     },
+    onStartFoodDrag: () => {},
+    onDragFood: (i, x, y, z) => {
+      const half = HALF - 2;
+      foodMeshes[i].position.set(
+        Math.max(-half, Math.min(half, x)),
+        Math.max(-half, Math.min(half, y)),
+        Math.max(-half, Math.min(half, z)),
+      );
+      foodSources3D[i].x = foodMeshes[i].position.x;
+      foodSources3D[i].y = foodMeshes[i].position.y;
+      foodSources3D[i].z = foodMeshes[i].position.z;
+    },
+    onEndFoodDrag: () => {},
   },
   () => nestPos.clone(),
   nestMesh,
+  () => foodMeshes,
   () => HALF,
   () => PARAMS.nestRadius,
 );
@@ -369,7 +463,10 @@ function frame(): void {
   // 3. Update agent mesh positions
   updateAgentMeshes();
 
-  // 4. Animate dust particles (slow drift)
+  // 4. Advance shader uniforms
+  agentUniforms.uTime.value = animTime;
+
+  // 5. Animate dust particles (slow drift)
   const dPos = dustPoints.geometry.attributes.position.array as Float32Array;
   for (let i = 0; i < DUST_COUNT; i++) {
     const i3 = i * 3;
@@ -386,32 +483,25 @@ function frame(): void {
   }
   dustPoints.geometry.attributes.position.needsUpdate = true;
 
-  // 5. Animate food patches
-  const foodPulse = 0.5 + 0.5 * Math.sin(animTime * 1.2);
-  for (const fm of foodMeshes) {
-    const mat = fm.material as THREE.MeshStandardMaterial;
-    mat.emissiveIntensity = 0.2 + 0.5 * foodPulse;
-    const s = (PARAMS.foodRadius / 2) * (0.9 + 0.1 * foodPulse);
-    fm.scale.set(s, s, s);
+  // 5. Advance caustic uniforms
+  nestUniforms.uTime.value = animTime;
+  nestUniforms.uIntensity.value = 0.7 + 0.5 * (0.5 + 0.5 * Math.sin(animTime * 0.6));
+  for (const fu of foodUniformsList) {
+    fu.uTime.value = animTime;
   }
 
-  // 6. Animate nest glow
-  const nestPulse = 0.5 + 0.5 * Math.sin(animTime * 0.6);
-  nestMat.emissiveIntensity = 0.3 + 0.4 * nestPulse;
-  auraMat.opacity = 0.06 + 0.1 * nestPulse;
-  const as = PARAMS.nestRadius * (1.2 + 0.15 * nestPulse);
-  auraMesh.scale.set(as, as, as);
+  // 6. Animate food patches
+  const foodPulse = 0.5 + 0.5 * Math.sin(animTime * 1.2);
+  for (let i = 0; i < foodMeshes.length; i++) {
+    foodUniformsList[i].uIntensity.value = 0.6 + 0.5 * foodPulse;
+    const s = (PARAMS.foodRadius / 2) * (0.9 + 0.1 * foodPulse);
+    foodMeshes[i].scale.set(s, s, s);
+  }
 
-  // 7. Cube frame subtle pulse
-  edgeMat.opacity = 0.2 + 0.15 * Math.sin(animTime * 0.3);
-
-  // 8. Corner markers pulse
-  cornerMat.opacity = 0.3 + 0.2 * Math.sin(animTime * 0.4);
-
-  // 9. Render
+  // 7. Render
   renderer.render(scene, camera);
 
-  // 10. HUD
+  // 8. HUD
   hud.tick(agents.length);
 }
 
