@@ -137,12 +137,12 @@ const nestMat = new THREE.MeshStandardMaterial({
 });
 const nestMesh = new THREE.Mesh(nestGeo, nestMat);
 
-// Nest glow aura (transparent sphere)
-const auraGeo = new THREE.SphereGeometry(1.3, 20, 16);
+// Nest glow aura — large enough to be seen as light emission
+const auraGeo = new THREE.SphereGeometry(1, 16, 12);
 const auraMat = new THREE.MeshBasicMaterial({
   color: 0x6688ff,
   transparent: true,
-  opacity: 0.1,
+  opacity: 0.15,
   side: THREE.BackSide,
   blending: THREE.AdditiveBlending,
 });
@@ -160,7 +160,7 @@ function updateNestVisuals(): void {
   nestMesh.position.copy(nestPos);
   nestMesh.scale.set(s, s, s);
   auraMesh.position.copy(nestPos);
-  auraMesh.scale.set(s * 1.3, s * 1.3, s * 1.3);
+  auraMesh.scale.set(s * 2.5, s * 2.5, s * 2.5);
   nestLight.position.copy(nestPos);
 }
 updateNestVisuals();
@@ -203,10 +203,24 @@ function addFood(wx: number, wy: number, wz: number): void {
   scene.add(mesh);
   foodMeshes.push(mesh);
 
-  // Food light
-  const foodLight = new THREE.PointLight(0x44dd88, 1.5, 20);
+  // Food light + glow aura
+  const foodLight = new THREE.PointLight(0x44dd88, 2.0, 25);
   foodLight.position.set(wx, wy, wz);
   scene.add(foodLight);
+
+  const foodAura = new THREE.Mesh(
+    new THREE.SphereGeometry(1, 12, 10),
+    new THREE.MeshBasicMaterial({
+      color: 0x44dd88,
+      transparent: true,
+      opacity: 0.12,
+      side: THREE.BackSide,
+      blending: THREE.AdditiveBlending,
+    }),
+  );
+  foodAura.position.set(wx, wy, wz);
+  foodAura.scale.set(s * 2.5, s * 2.5, s * 2.5);
+  scene.add(foodAura);
 }
 
 // Also add food-aura ring effect
@@ -284,7 +298,7 @@ let agentMat = new THREE.ShaderMaterial({
   vertexShader: agentVertexShader,
   fragmentShader: agentFragmentShader,
   transparent: true,
-  blending: THREE.AdditiveBlending,
+  blending: THREE.SubtractiveBlending,
   depthWrite: false,
 });
 let agentMesh = new THREE.InstancedMesh(agentGeo, agentMat, agents.length);
@@ -312,7 +326,7 @@ function rebuildAgents(): void {
     vertexShader: agentVertexShader,
     fragmentShader: agentFragmentShader,
     transparent: true,
-    blending: THREE.AdditiveBlending,
+    blending: THREE.SubtractiveBlending,
     depthWrite: false,
   });
   agentMesh = new THREE.InstancedMesh(agentGeo, agentMat, agents.length);
@@ -446,8 +460,8 @@ function frame(): void {
   // 6. Animate nest glow
   const nestPulse = 0.5 + 0.5 * Math.sin(animTime * 0.6);
   nestMat.emissiveIntensity = 0.3 + 0.4 * nestPulse;
-  auraMat.opacity = 0.06 + 0.1 * nestPulse;
-  const as = PARAMS.nestRadius * (1.2 + 0.15 * nestPulse);
+  auraMat.opacity = 0.08 + 0.18 * nestPulse;
+  const as = PARAMS.nestRadius * (2.2 + 0.6 * nestPulse);
   auraMesh.scale.set(as, as, as);
 
   // 7. Render
