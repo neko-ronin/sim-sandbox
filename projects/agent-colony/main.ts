@@ -116,11 +116,21 @@ renderer.domElement.addEventListener("webglcontextrestored", () => {
   document.querySelector("#webgl-loss")?.remove();
 });
 
-// ─── Camera (static) ──────────────────────────────────────────────────────
+// ─── Camera (static by default; optional slow auto-orbit) ────────────────────
+// The static framing is the original view. When rotation is enabled, the camera
+// orbits the Y axis: the world-space sim, the axis-aligned fog cube, and pointer
+// raycasting all stay fixed, so the vivarium appears to turn without desyncing
+// any of them. Toggle from the debug panel ("Camera Rotation").
 const camera = new THREE.PerspectiveCamera(
   40, window.innerWidth / window.innerHeight, 0.1, 150,
 );
-camera.position.set(40, 28, 45);
+const CAM_START = new THREE.Vector3(40, 28, 45);
+const CAM_RADIUS = Math.hypot(CAM_START.x, CAM_START.z); // orbit radius in XZ
+const CAM_HEIGHT = CAM_START.y;
+let camOrbitSpeed = 0.05; // radians/sec — default a full turn every ~2 minutes
+let camAngle = Math.atan2(CAM_START.z, CAM_START.x);
+let cameraRotating = false; // static until toggled on
+camera.position.copy(CAM_START);
 camera.lookAt(0, 0, 0);
 
 // ─── Volumetric cloud / fog pass ────────────────────────────────────────────
@@ -629,12 +639,36 @@ window.addEventListener("param-change", ((e: CustomEvent) => {
   else if (e.detail.key === "cloudDensity") fogPass.setDensity(e.detail.value);
 }) as EventListener);
 
+window.addEventListener("camera-rotate-change", ((e: CustomEvent) => {
+  cameraRotating = e.detail.rotating;
+}) as EventListener);
+
+window.addEventListener("camera-speed-change", ((e: CustomEvent) => {
+  camOrbitSpeed = e.detail.value;
+}) as EventListener);
+
+window.addEventListener("trail-visible-change", ((e: CustomEvent) => {
+  trail.visible = e.detail.visible;
+}) as EventListener);
+
 // ─── Main Loop ─────────────────────────────────────────────────────────────
 let animTime = 0;
 
 function frame(): void {
   requestAnimationFrame(frame);
   animTime += 0.016;
+
+  // When enabled, slowly orbit the camera so the vivarium reads as turning.
+  // When off, the camera holds wherever it last was (static by default).
+  if (cameraRotating) {
+    camAngle += camOrbitSpeed * 0.016;
+    camera.position.set(
+      Math.cos(camAngle) * CAM_RADIUS,
+      CAM_HEIGHT,
+      Math.sin(camAngle) * CAM_RADIUS,
+    );
+    camera.lookAt(0, 0, 0);
+  }
 
   updateAgents(agents, homeField, foodField, foodSources3D, nestPos.x, nestPos.y, nestPos.z, PARAMS.cubeSize);
   homeField.step(PARAMS.pheromoneDecay, PARAMS.blurMix);

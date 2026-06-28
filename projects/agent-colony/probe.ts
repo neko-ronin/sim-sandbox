@@ -4,6 +4,11 @@ import { PheromoneVolume } from "./pheromone";
 import { createAgents, updateAgents, STATE_FORAGING, STATE_RETURNING } from "./ants";
 import { PARAMS } from "./params";
 
+// `process` is provided by the Bun runtime this probe runs under (`bun probe.ts`).
+// Declare the one field we use locally so the app typecheck (tsc globs this file,
+// and `npm run build` runs `tsc &&`) passes without pulling in @types/node.
+declare const process: { env: Record<string, string | undefined> };
+
 const ov = (k: string, p: keyof typeof PARAMS) => {
   const v = process.env[k];
   if (v !== undefined) (PARAMS as any)[p] = parseFloat(v);

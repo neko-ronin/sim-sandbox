@@ -171,6 +171,140 @@ export class HUD {
       this.panelEl.appendChild(row);
     }
 
+    this._buildCameraToggle();
+    this._buildTrailToggle();
+
     document.body.appendChild(this.panelEl);
+  }
+
+  // Pheromone-trail visibility toggle. Dispatches `trail-visible-change` with
+  // `{ visible }`; main.ts owns the mesh. Visible is the default.
+  private _buildTrailToggle(): void {
+    if (!this.panelEl) return;
+
+    const row = document.createElement("div");
+    row.style.cssText =
+      "margin-top: 6px; display: flex; justify-content: space-between; align-items: center;";
+
+    const label = document.createElement("span");
+    label.textContent = "Pheromone Trail";
+
+    const btn = document.createElement("button");
+    let visible = true;
+    const paint = () => {
+      btn.textContent = visible ? "SHOWN" : "HIDDEN";
+      btn.style.color = visible ? "#9fe0c8" : "#585d8a";
+      btn.style.borderColor = visible
+        ? "rgba(159, 224, 200, 0.4)"
+        : "rgba(88, 93, 138, 0.3)";
+    };
+    btn.style.cssText = `
+      background: rgba(88, 93, 138, 0.12);
+      border: 1px solid rgba(88, 93, 138, 0.3);
+      border-radius: 5px;
+      padding: 3px 10px;
+      font: inherit;
+      font-size: 0.65rem;
+      letter-spacing: 0.05em;
+      cursor: pointer;
+    `;
+    paint();
+    btn.addEventListener("click", () => {
+      visible = !visible;
+      paint();
+      window.dispatchEvent(
+        new CustomEvent("trail-visible-change", { detail: { visible } }),
+      );
+    });
+
+    row.appendChild(label);
+    row.appendChild(btn);
+    this.panelEl.appendChild(row);
+  }
+
+  // Static-vs-rotating camera toggle. Dispatches `camera-rotate-change` with
+  // `{ rotating }`; main.ts owns the actual orbit. Static is the default.
+  private _buildCameraToggle(): void {
+    if (!this.panelEl) return;
+
+    const row = document.createElement("div");
+    row.style.cssText =
+      "margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(88, 93, 138, 0.2); display: flex; justify-content: space-between; align-items: center;";
+
+    const label = document.createElement("span");
+    label.textContent = "Camera Rotation";
+
+    const btn = document.createElement("button");
+    let rotating = false;
+    const paint = () => {
+      btn.textContent = rotating ? "ROTATING" : "STATIC";
+      btn.style.color = rotating ? "#9fe0c8" : "#585d8a";
+      btn.style.borderColor = rotating
+        ? "rgba(159, 224, 200, 0.4)"
+        : "rgba(88, 93, 138, 0.3)";
+    };
+    btn.style.cssText = `
+      background: rgba(88, 93, 138, 0.12);
+      border: 1px solid rgba(88, 93, 138, 0.3);
+      border-radius: 5px;
+      padding: 3px 10px;
+      font: inherit;
+      font-size: 0.65rem;
+      letter-spacing: 0.05em;
+      cursor: pointer;
+    `;
+    paint();
+    btn.addEventListener("click", () => {
+      rotating = !rotating;
+      paint();
+      window.dispatchEvent(
+        new CustomEvent("camera-rotate-change", { detail: { rotating } }),
+      );
+    });
+
+    row.appendChild(label);
+    row.appendChild(btn);
+    this.panelEl.appendChild(row);
+
+    // Orbit speed (radians/sec). Dispatches `camera-speed-change` with `{ value }`.
+    const speedRow = document.createElement("div");
+    speedRow.style.cssText = "margin-top: 6px; display: flex; flex-direction: column; gap: 2px;";
+
+    const speedLabelRow = document.createElement("div");
+    speedLabelRow.style.cssText = "display: flex; justify-content: space-between;";
+    const speedLabel = document.createElement("span");
+    speedLabel.textContent = "Rotation Speed";
+    const speedValue = document.createElement("span");
+    speedValue.style.cssText = "color: #585d8a;";
+    speedValue.textContent = "0.05";
+    speedLabelRow.appendChild(speedLabel);
+    speedLabelRow.appendChild(speedValue);
+
+    const speedSlider = document.createElement("input");
+    speedSlider.type = "range";
+    speedSlider.min = "0";
+    speedSlider.max = "0.4";
+    speedSlider.step = "0.01";
+    speedSlider.value = "0.05";
+    speedSlider.style.cssText = `
+      width: 100%;
+      height: 4px;
+      -webkit-appearance: none;
+      appearance: none;
+      background: rgba(88, 93, 138, 0.25);
+      border-radius: 2px;
+      outline: none;
+    `;
+    speedSlider.addEventListener("input", () => {
+      const v = parseFloat(speedSlider.value);
+      speedValue.textContent = v.toFixed(2);
+      window.dispatchEvent(
+        new CustomEvent("camera-speed-change", { detail: { value: v } }),
+      );
+    });
+
+    speedRow.appendChild(speedLabelRow);
+    speedRow.appendChild(speedSlider);
+    this.panelEl.appendChild(speedRow);
   }
 }
