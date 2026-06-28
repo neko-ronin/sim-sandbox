@@ -192,7 +192,7 @@ export class HUD {
 
   // Depth-of-field controls. Defaults mirror the BokehPass defaults in main.ts;
   // keep the two in sync if either changes.
-  private static readonly DOF_VERSION = "v1.0";
+  private static readonly DOF_VERSION = "v2.2";
 
   private _buildDofSection(): void {
     if (!this.panelEl) return;
@@ -244,18 +244,21 @@ export class HUD {
     title.appendChild(toggle);
     section.appendChild(title);
 
-    // focus is in world units (camera→subject distance); ~66 = scene centre.
+    // All in world units except Blur Strength (screen-space). Focus is the
+    // focal-plane depth; Focus Width is the sharp band around it; Falloff is the
+    // gradient distance into full blur. Defaults mirror DepthOfFieldPass.
     const dofParams: Array<{
-      key: "focus" | "aperture" | "maxblur";
+      key: "focus" | "focusRadius" | "falloff" | "maxblur";
       label: string;
       min: number;
       max: number;
       step: number;
       value: number;
     }> = [
-      { key: "focus", label: "Focus (centre ≈ 66)", min: 10, max: 130, step: 0.5, value: 30 },
-      { key: "aperture", label: "Aperture", min: 0, max: 0.5, step: 0.001, value: 0.001 },
-      { key: "maxblur", label: "Max Blur", min: 0, max: 0.03, step: 0.001, value: 0.002 },
+      { key: "focus", label: "Focus (centre ≈ 66)", min: 10, max: 130, step: 0.5, value: 40 },
+      { key: "focusRadius", label: "Focus Width", min: 0, max: 50, step: 0.5, value: 20 },
+      { key: "falloff", label: "Falloff (gradient)", min: 0.5, max: 80, step: 0.5, value: 5.0 },
+      { key: "maxblur", label: "Blur Strength", min: 0, max: 0.06, step: 0.001, value: 0.003 },
     ];
 
     for (const cfg of dofParams) {
@@ -323,7 +326,7 @@ export class HUD {
     label.textContent = "Pheromone Trail";
 
     const btn = document.createElement("button");
-    let visible = true;
+    let visible = false;
     const paint = () => {
       btn.textContent = visible ? "SHOWN" : "HIDDEN";
       btn.style.color = visible ? "#9fe0c8" : "#585d8a";
@@ -368,7 +371,7 @@ export class HUD {
     label.textContent = "Camera Rotation";
 
     const btn = document.createElement("button");
-    let rotating = false;
+    let rotating = true;
     const paint = () => {
       btn.textContent = rotating ? "ROTATING" : "STATIC";
       btn.style.color = rotating ? "#9fe0c8" : "#585d8a";

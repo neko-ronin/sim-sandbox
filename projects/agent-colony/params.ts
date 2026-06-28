@@ -38,8 +38,8 @@ export interface SimParams {
 }
 
 export const PARAMS: SimParams = {
-  antCount: 400,
-  speed: 0.14,
+  antCount: 500,
+  speed: 0.2,
   visionRadius: 7,
   senseRadius: 2.0,
   wander: 0.26,

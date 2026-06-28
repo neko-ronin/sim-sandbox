@@ -18,7 +18,7 @@ import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
-import { BokehPass } from "three/examples/jsm/postprocessing/BokehPass.js";
+import { DepthOfFieldPass } from "./dof";
 import { Pass, FullScreenQuad } from "three/examples/jsm/postprocessing/Pass.js";
 
 import { PheromoneVolume } from "./pheromone";
@@ -130,7 +130,7 @@ const CAM_RADIUS = Math.hypot(CAM_START.x, CAM_START.z); // orbit radius in XZ
 const CAM_HEIGHT = CAM_START.y;
 let camOrbitSpeed = 0.05; // radians/sec — default a full turn every ~2 minutes
 let camAngle = Math.atan2(CAM_START.z, CAM_START.x);
-let cameraRotating = false; // static until toggled on
+let cameraRotating = true; // orbiting by default
 camera.position.copy(CAM_START);
 camera.lookAt(0, 0, 0);
 
@@ -312,6 +312,21 @@ const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
 const fogPass = new VolumetricFogPass(camera, lightPosArr, lightColArr, HALF);
 composer.addPass(fogPass); // clouds first, so bloom blooms them too
+
+// ─── Depth of field ──────────────────────────────────────────────────────────
+// Focus is the focal-plane depth (view-space) in world units; ~66 is the scene
+// centre. focusRadius is the fully-sharp band around it; falloff is how far the
+// gradient ramps into full blur. All live-tunable via the debug panel.
+//
+// Ordered BEFORE bloom on purpose: DoF blurs by true geometry depth, then bloom
+// glows the result. If bloom ran first, an in-focus subject's bright halo (which
+// sits at background depth) would get smeared by DoF and the subject would read
+// as out of focus even though its core pixels are sharp.
+const dofPass = new DepthOfFieldPass(scene, camera, {
+  focus: 40.0, focusRadius: 20.0, falloff: 5.0, maxblur: 0.003,
+});
+composer.addPass(dofPass);
+
 const bloom = new UnrealBloomPass(
   new THREE.Vector2(window.innerWidth, window.innerHeight),
   0.55, // strength
@@ -319,15 +334,6 @@ const bloom = new UnrealBloomPass(
   0.55, // threshold — only bright cores bloom, background stays dark
 );
 composer.addPass(bloom);
-
-// ─── Depth of field ──────────────────────────────────────────────────────────
-// Focus is a camera→subject distance in world units; ~66 is the scene centre,
-// 30 pulls the focal plane in front of it for a shallower foreground bias.
-// Live-tunable via the debug panel.
-const bokehPass = new BokehPass(scene, camera, {
-  focus: 30.0, aperture: 0.001, maxblur: 0.002,
-});
-composer.addPass(bokehPass);
 
 composer.addPass(new OutputPass());
 
@@ -555,6 +561,7 @@ const trailMat = new THREE.PointsMaterial({
   depthWrite: false,
 });
 const trail = new THREE.Points(trailGeo, trailMat);
+trail.visible = false; // hidden by default; toggle from the debug panel
 scene.add(trail);
 
 // Auto-ranged (like the 2D heatmap) so the trail is always visible regardless
@@ -663,17 +670,18 @@ window.addEventListener("trail-visible-change", ((e: CustomEvent) => {
 }) as EventListener);
 
 window.addEventListener("dof-change", ((e: CustomEvent) => {
-  const uniforms = bokehPass.uniforms as Record<string, { value: number }>;
-  const u = uniforms[e.detail.key];
+  const u = dofPass.uniforms[e.detail.key];
   if (u) u.value = e.detail.value;
 }) as EventListener);
 
 // DoF mode: "off" disables the pass; "on" uses the manual focus slider; "nest"
 // tracks the focal plane to the blue nest each frame (see the main loop).
 let dofMode: "off" | "on" | "nest" = "on";
+const camForward = new THREE.Vector3();
+const nestOffset = new THREE.Vector3();
 window.addEventListener("dof-mode-change", ((e: CustomEvent) => {
   dofMode = e.detail.mode;
-  bokehPass.enabled = dofMode !== "off";
+  dofPass.enabled = dofMode !== "off";
 }) as EventListener);
 
 // ─── Main Loop ─────────────────────────────────────────────────────────────
@@ -698,8 +706,13 @@ function frame(): void {
   // In NEST mode the focal plane rides the blue nest: focus = camera→nest
   // distance, recomputed each frame so it stays sharp as the camera orbits.
   if (dofMode === "nest") {
-    const nestFocus = camera.position.distanceTo(nestPos);
-    (bokehPass.uniforms as Record<string, { value: number }>).focus.value = nestFocus;
+    // BokehShader focuses by view-space (perpendicular) depth, not straight-line
+    // distance — project nest→camera onto the camera's forward axis so the nest
+    // lands exactly on the zero-blur plane regardless of how far off-centre it is.
+    camera.getWorldDirection(camForward);
+    nestOffset.copy(nestPos).sub(camera.position);
+    const nestFocus = nestOffset.dot(camForward);
+    dofPass.uniforms.focus.value = nestFocus;
     hud.setDofFocus(nestFocus); // keep the slider in sync with the live distance
   }
 
