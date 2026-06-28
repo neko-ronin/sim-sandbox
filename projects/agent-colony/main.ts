@@ -18,6 +18,7 @@ import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
+import { BokehPass } from "three/examples/jsm/postprocessing/BokehPass.js";
 import { Pass, FullScreenQuad } from "three/examples/jsm/postprocessing/Pass.js";
 
 import { PheromoneVolume } from "./pheromone";
@@ -318,6 +319,16 @@ const bloom = new UnrealBloomPass(
   0.55, // threshold — only bright cores bloom, background stays dark
 );
 composer.addPass(bloom);
+
+// ─── Depth of field ──────────────────────────────────────────────────────────
+// Focus is a camera→subject distance in world units; ~66 is the scene centre,
+// 30 pulls the focal plane in front of it for a shallower foreground bias.
+// Live-tunable via the debug panel.
+const bokehPass = new BokehPass(scene, camera, {
+  focus: 30.0, aperture: 0.001, maxblur: 0.002,
+});
+composer.addPass(bokehPass);
+
 composer.addPass(new OutputPass());
 
 // No scene lights: every surface is emissive (nest/food) or a self-lit shader
@@ -651,6 +662,20 @@ window.addEventListener("trail-visible-change", ((e: CustomEvent) => {
   trail.visible = e.detail.visible;
 }) as EventListener);
 
+window.addEventListener("dof-change", ((e: CustomEvent) => {
+  const uniforms = bokehPass.uniforms as Record<string, { value: number }>;
+  const u = uniforms[e.detail.key];
+  if (u) u.value = e.detail.value;
+}) as EventListener);
+
+// DoF mode: "off" disables the pass; "on" uses the manual focus slider; "nest"
+// tracks the focal plane to the blue nest each frame (see the main loop).
+let dofMode: "off" | "on" | "nest" = "on";
+window.addEventListener("dof-mode-change", ((e: CustomEvent) => {
+  dofMode = e.detail.mode;
+  bokehPass.enabled = dofMode !== "off";
+}) as EventListener);
+
 // ─── Main Loop ─────────────────────────────────────────────────────────────
 let animTime = 0;
 
@@ -668,6 +693,14 @@ function frame(): void {
       Math.sin(camAngle) * CAM_RADIUS,
     );
     camera.lookAt(0, 0, 0);
+  }
+
+  // In NEST mode the focal plane rides the blue nest: focus = camera→nest
+  // distance, recomputed each frame so it stays sharp as the camera orbits.
+  if (dofMode === "nest") {
+    const nestFocus = camera.position.distanceTo(nestPos);
+    (bokehPass.uniforms as Record<string, { value: number }>).focus.value = nestFocus;
+    hud.setDofFocus(nestFocus); // keep the slider in sync with the live distance
   }
 
   updateAgents(agents, homeField, foodField, foodSources3D, nestPos.x, nestPos.y, nestPos.z, PARAMS.cubeSize);

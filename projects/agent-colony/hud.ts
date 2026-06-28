@@ -8,6 +8,18 @@ export class HUD {
   private fpsSamples: number[] = [];
   private panelEl: HTMLDivElement | null = null;
   private panelVisible = false;
+  // Focus-slider handles, so NEST mode can reflect the live focal distance.
+  private dofFocusSlider: HTMLInputElement | null = null;
+  private dofFocusValue: HTMLSpanElement | null = null;
+  private dofFocusDecimals = 1;
+
+  // Drive the DoF focus slider from outside (NEST mode tracks the nest each
+  // frame). No-op until the panel is built.
+  setDofFocus(value: number): void {
+    if (!this.dofFocusSlider || !this.dofFocusValue) return;
+    this.dofFocusSlider.value = String(value);
+    this.dofFocusValue.textContent = value.toFixed(this.dofFocusDecimals);
+  }
 
   constructor() {
     this.fpsEl = document.getElementById("fps") as HTMLSpanElement;
@@ -173,8 +185,129 @@ export class HUD {
 
     this._buildCameraToggle();
     this._buildTrailToggle();
+    this._buildDofSection();
 
     document.body.appendChild(this.panelEl);
+  }
+
+  // Depth-of-field controls. Defaults mirror the BokehPass defaults in main.ts;
+  // keep the two in sync if either changes.
+  private static readonly DOF_VERSION = "v1.0";
+
+  private _buildDofSection(): void {
+    if (!this.panelEl) return;
+
+    const section = document.createElement("div");
+    section.style.cssText =
+      "margin-top: 12px; padding-top: 10px; border-top: 1px solid rgba(88, 93, 138, 0.2);";
+
+    const title = document.createElement("div");
+    title.textContent = `⚙ DEPTH OF FIELD ${HUD.DOF_VERSION}`;
+    title.style.cssText =
+      "font-size: 0.7rem; color: #c89f7a; letter-spacing: 0.05em; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;";
+
+    // 3-state cycle: OFF → ON (manual focus) → NEST (focus tracks the nest).
+    const modes = ["off", "on", "nest"] as const;
+    const modeColor = { off: "#585d8a", on: "#9fe0c8", nest: "#7aa8e0" };
+    const modeBorder = {
+      off: "rgba(88, 93, 138, 0.3)",
+      on: "rgba(159, 224, 200, 0.4)",
+      nest: "rgba(122, 168, 224, 0.45)",
+    };
+    const toggle = document.createElement("button");
+    let modeIdx = 1; // default ON, matching main.ts
+    const paint = () => {
+      const m = modes[modeIdx];
+      toggle.textContent = m.toUpperCase();
+      toggle.style.color = modeColor[m];
+      toggle.style.borderColor = modeBorder[m];
+    };
+    toggle.style.cssText = `
+      background: rgba(88, 93, 138, 0.12);
+      border: 1px solid rgba(88, 93, 138, 0.3);
+      border-radius: 5px;
+      padding: 2px 9px;
+      min-width: 42px;
+      font: inherit;
+      font-size: 0.6rem;
+      letter-spacing: 0.05em;
+      cursor: pointer;
+    `;
+    paint();
+    toggle.addEventListener("click", () => {
+      modeIdx = (modeIdx + 1) % modes.length;
+      paint();
+      window.dispatchEvent(
+        new CustomEvent("dof-mode-change", { detail: { mode: modes[modeIdx] } }),
+      );
+    });
+    title.appendChild(toggle);
+    section.appendChild(title);
+
+    // focus is in world units (camera→subject distance); ~66 = scene centre.
+    const dofParams: Array<{
+      key: "focus" | "aperture" | "maxblur";
+      label: string;
+      min: number;
+      max: number;
+      step: number;
+      value: number;
+    }> = [
+      { key: "focus", label: "Focus (centre ≈ 66)", min: 10, max: 130, step: 0.5, value: 30 },
+      { key: "aperture", label: "Aperture", min: 0, max: 0.5, step: 0.001, value: 0.001 },
+      { key: "maxblur", label: "Max Blur", min: 0, max: 0.03, step: 0.001, value: 0.002 },
+    ];
+
+    for (const cfg of dofParams) {
+      const decimals = (String(cfg.step).split(".")[1] || "").length;
+      const row = document.createElement("div");
+      row.style.cssText = "margin-bottom: 5px; display: flex; flex-direction: column; gap: 2px;";
+
+      const labelRow = document.createElement("div");
+      labelRow.style.cssText = "display: flex; justify-content: space-between;";
+      const label = document.createElement("span");
+      label.textContent = cfg.label;
+      const value = document.createElement("span");
+      value.style.cssText = "color: #585d8a;";
+      value.textContent = cfg.value.toFixed(decimals);
+      labelRow.appendChild(label);
+      labelRow.appendChild(value);
+
+      const slider = document.createElement("input");
+      slider.type = "range";
+      slider.min = String(cfg.min);
+      slider.max = String(cfg.max);
+      slider.step = String(cfg.step);
+      slider.value = String(cfg.value);
+      slider.style.cssText = `
+        width: 100%;
+        height: 4px;
+        -webkit-appearance: none;
+        appearance: none;
+        background: rgba(88, 93, 138, 0.25);
+        border-radius: 2px;
+        outline: none;
+      `;
+      slider.addEventListener("input", () => {
+        const v = parseFloat(slider.value);
+        value.textContent = v.toFixed(decimals);
+        window.dispatchEvent(
+          new CustomEvent("dof-change", { detail: { key: cfg.key, value: v } }),
+        );
+      });
+
+      if (cfg.key === "focus") {
+        this.dofFocusSlider = slider;
+        this.dofFocusValue = value;
+        this.dofFocusDecimals = decimals;
+      }
+
+      row.appendChild(labelRow);
+      row.appendChild(slider);
+      section.appendChild(row);
+    }
+
+    this.panelEl.appendChild(section);
   }
 
   // Pheromone-trail visibility toggle. Dispatches `trail-visible-change` with
