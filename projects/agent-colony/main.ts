@@ -33,8 +33,11 @@ const HALF = PARAMS.cubeSize / 2;
 const WORLD_TO_GRID = GRID_SIZE / PARAMS.cubeSize;
 const NEST_START = new THREE.Vector3(-8, 4, -8);
 const NEST_COLOR = 0x5b8cff;
-const FOOD_COLOR = 0x3ad17a;
-const NEST_GLOW = 2.4; // steady emissive; higher than food's 1.6 since blue
+// Food is the scarlet "station"; carriers (orange) sit ~100 RGB / ~31° off it,
+// mirroring the cool nest→forager step (~104 / 48°). Food is the deeper anchor,
+// the carrier the lighter agent — the warm-side mirror of nest→forager.
+const FOOD_COLOR = 0xe63a33;
+const NEST_GLOW = 1.7; // steady emissive; cooled to offset the lower bloom threshold
                        // reads dimmer than green at equal intensity
 const MAX_AGENT_LIGHTS = 10; // glow sources sampled by the agent shader (fixed array)
 
@@ -331,7 +334,7 @@ const bloom = new UnrealBloomPass(
   new THREE.Vector2(window.innerWidth, window.innerHeight),
   0.55, // strength
   0.5,  // radius
-  0.55, // threshold — only bright cores bloom, background stays dark
+  0.35, // threshold — lowered so the deeper scarlet food blooms; emitters cooled to compensate
 );
 composer.addPass(bloom);
 
@@ -391,7 +394,7 @@ function addFood(wx: number, wy: number, wz: number): void {
   const mesh = new THREE.Mesh(
     foodSphereGeo,
     new THREE.MeshStandardMaterial({
-      color: FOOD_COLOR, emissive: FOOD_COLOR, emissiveIntensity: 2.2,
+      color: FOOD_COLOR, emissive: FOOD_COLOR, emissiveIntensity: 2.4,
       roughness: 0.35, metalness: 0.0,
     }),
   );
@@ -727,7 +730,9 @@ function frame(): void {
 
   // Nest holds a steady glow (set at creation); the food orbs breathe and
   // shrink toward empty. Iterate backwards so spent sources can be spliced out.
-  const foodPulse = 1.38 + 0.5 * (0.5 + 0.5 * Math.sin(animTime * 1.2));
+  // Cooled to offset the lower bloom threshold (0.35); the scarlet still clears
+  // it and glows without blowing out.
+  const foodPulse = 2.2 + 0.6 * (0.5 + 0.5 * Math.sin(animTime * 1.2));
   for (let i = foodMeshes.length - 1; i >= 0; i--) {
     const fs = foodSources3D[i];
     if (fs.value <= 0) { removeFood(i); continue; } // fully drained → gone
