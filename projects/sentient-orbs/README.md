@@ -1,6 +1,6 @@
-# Agent Colony
+# Sentient Orbs
 
-A 3D ant-colony vivarium: instanced agents forage between a nest and food
+A 3D vivarium of glowing orbs: instanced agents forage between a nest and food
 sources inside a volumetric-fog cube, depositing pheromone trails. Rendered with
 Three.js post-processing (volumetric fog → depth of field → bloom).
 

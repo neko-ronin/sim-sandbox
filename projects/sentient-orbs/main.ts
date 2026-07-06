@@ -1,4 +1,4 @@
-// ─── Agent Colony: 3D Vivarium ─────────────────────────────────────────────
+// ─── Sentient Orbs: 3D Vivarium ────────────────────────────────────────────
 // Near-sighted agents forage through a cubic volume using two pheromone fields
 // (HOME + FOOD — see ants.ts). Visuals are a glowing dark-room aesthetic with
 // NO real scene lights — everything is self-lit and bloom carries the glow:
